@@ -33,6 +33,6 @@ jobs:
         with:
           name: dyresearch
           path: |
-            dist/main.js
+            main.js
             manifest.json
             styles.css
