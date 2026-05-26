@@ -1,0 +1,430 @@
+/* --- Modal Layout & Containers --- */
+.dy-chat-modal {
+    display: flex;
+    flex-direction: column;
+    height: 85vh;
+    max-height: 900px;
+}
+
+.chat-session-id {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: -10px;
+    margin-bottom: 20px;
+    font-family: var(--font-monospace);
+    opacity: 0.7;
+}
+
+/* --- Chat History Area --- */
+.chat-history {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 15px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background-color: var(--background-primary-alt);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    scroll-behavior: smooth;
+}
+
+/* --- Message Bubbles & Structure --- */
+.chat-msg-wrapper {
+    display: flex;
+    flex-direction: column;
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+.chat-sender {
+    font-weight: 600;
+    font-size: 0.75rem;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-accent);
+}
+
+.chat-msg-content {
+    padding: 12px 16px;
+    border-radius: 8px;
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    line-height: 1.6;
+    max-width: 100%;
+    color: var(--text-normal);
+}
+
+/* --- Streaming Components (NEW) --- */
+
+/* The 'Thinking' block for agent reasoning */
+.chat-thinking-block {
+    font-family: var(--font-monospace);
+    font-size: 0.85em;
+    color: var(--text-muted);
+    background-color: var(--background-secondary);
+    border-left: 3px solid var(--text-faint);
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    line-height: 1.4;
+}
+
+/* Status indicator for tool usage and transfers */
+.chat-status-indicator {
+    font-size: 0.8em;
+    color: var(--interactive-accent);
+    font-style: italic;
+    margin-bottom: 8px;
+    min-height: 1.2em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.chat-status-indicator:not(:empty) {
+    animation: dy-pulse 2s infinite ease-in-out;
+}
+
+/* --- Input Area --- */
+.chat-input-container {
+    margin-top: 20px;
+    display: flex;
+    gap: 12px;
+}
+
+.chat-input-container input {
+    flex-grow: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary);
+    box-shadow: var(--input-shadow);
+}
+
+.chat-input-container input:focus {
+    border-color: var(--interactive-accent);
+    box-shadow: 0 0 0 2px var(--background-modifier-accent-alpha);
+}
+
+/* --- Sidebar: History & Library --- */
+.dy-history-container { padding: 10px; }
+
+.history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-bottom: 15px;
+}
+
+.history-header h4 {
+    margin: 0;
+}
+
+.dy-tab-btn {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 8px 0;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.dy-tab-btn.is-active-tab {
+    background-color: var(--background-modifier-accent);
+    color: var(--text-on-accent);
+}
+
+/* --- Cards (History Items & Library) --- */
+.history-item, .library-card {
+    padding: 12px;
+    border-radius: 8px;
+    background-color: var(--background-secondary);
+    border: 1px solid transparent;
+    transition: all 0.2s ease;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.history-item:hover, .library-card:hover {
+    background-color: var(--background-modifier-hover);
+    border-color: var(--background-modifier-border);
+}
+
+.history-item.is-active {
+    border-color: var(--interactive-accent);
+    background-color: var(--background-primary-alt);
+}
+
+.session-title-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.session-name {
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-grow: 1;
+}
+
+/* --- Badges & Meta --- */
+.badge-type {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.7em;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.library-meta {
+    font-size: 0.8em;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+/* --- Buttons & Icons --- */
+.dy-edit-btn, .dy-delete-btn, .dy-delete-btn-small {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    opacity: 0;
+    transition: all 0.2s ease;
+}
+
+.history-item:hover .dy-edit-btn, 
+.history-item:hover .dy-delete-btn,
+.library-card:hover .dy-delete-btn-small {
+    opacity: 1;
+}
+
+.dy-edit-btn:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.dy-delete-btn:hover, .dy-delete-btn-small:hover { 
+    color: var(--text-error); 
+    background: var(--background-modifier-error-hover); 
+}
+
+/* --- SEARCH BAR LAYOUT --- */
+.history-search-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background-color: var(--background-secondary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.history-search-input {
+    flex: 1;
+    min-width: 0; /* Prevents input from breaking flexbox bounds */
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary);
+    color: var(--text-normal);
+    font-size: var(--font-ui-small);
+}
+
+.history-search-input:focus {
+    border-color: var(--text-accent);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--background-modifier-accent-blur);
+}
+
+/* --- FUZZY TOGGLE ALIGNMENT --- */
+.history-fuzzy-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    user-select: none;
+    cursor: pointer;
+}
+
+.history-fuzzy-toggle input[type="checkbox"] {
+    cursor: pointer;
+    margin: 0;
+    width: 14px;
+    height: 14px;
+}
+
+.history-fuzzy-toggle label {
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+/* --- Animations --- */
+@keyframes dy-pulse {
+    0% { opacity: 0.4; }
+    50% { opacity: 1; }
+    100% { opacity: 0.4; }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Markdown Overrides inside Chat --- */
+.chat-msg-content p:first-child { margin-top: 0; }
+.chat-msg-content p:last-child { margin-bottom: 0; }
+.chat-msg-content code { background-color: var(--background-secondary); }
+.chat-msg-content pre { margin: 8px 0; border-radius: 4px; }
+
+/* --- Library Container & Navigation --- */
+.dy-history-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 0; /* Let internal sections handle padding */
+}
+
+/* --- Improved Upload Section --- */
+.upload-section {
+    background-color: var(--background-secondary);
+    padding: 16px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.upload-section h4 {
+    margin: 0 0 4px 0;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Grid layout for inputs to save space */
+.upload-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.upload-section input, .upload-section select {
+    width: 100%;
+    font-size: 0.85rem;
+    padding: 6px 8px;
+}
+
+.dy-upload-btn-container {
+    margin-top: 4px;
+}
+
+.dy-upload-btn-container button {
+    width: 100%;
+    justify-content: center;
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+/* --- Files in Library List --- */
+.library-list {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* --- The Paper "Card" --- */
+.library-card {
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 12px;
+    transition: transform 0.1s ease, box-shadow 0.2s ease;
+    position: relative;
+}
+
+.library-card:hover {
+    border-color: var(--interactive-accent);
+    box-shadow: var(--shadow-s);
+}
+
+.library-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.library-card-header strong {
+    font-size: 0.95rem;
+    line-height: 1.3;
+    color: var(--text-normal);
+    display: -webkit-box;
+    -webkit-line-clamp: 2; /* Limit title to 2 lines */
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.badge-type {
+    font-size: 0.65rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background-color: var(--background-modifier-accent);
+    color: var(--text-on-accent);
+    white-space: nowrap;
+    text-transform: uppercase;
+    font-weight: 700;
+}
+
+/* --- Compact Metadata Row --- */
+.library-meta-container {
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: 12px;
+    row-gap: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    border-top: 1px solid var(--background-modifier-border);
+    padding-top: 8px;
+    margin-top: 8px;
+}
+
+.library-meta-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.library-meta-item span.icon {
+    font-size: 0.9rem;
+    opacity: 0.8;
+}
+
+/* Specifically styling the tag pill */
+.library-tag {
+    background-color: var(--background-secondary-alt);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+/* Highlight the chunk count */
+.chunks-info {
+    color: var(--text-accent);
+    font-weight: 600;
+}

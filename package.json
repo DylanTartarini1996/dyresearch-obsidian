@@ -1,0 +1,21 @@
+{
+  "name": "dyresearch-sidecar",
+  "version": "1.0.0",
+  "description": "Bridge to the DyResearch Agent system built with Google ADK.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs --production"
+  },
+  "author": "Dylan Tartarini",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "builtin-modules": "^5.1.0",
+    "esbuild": "0.20.1",
+    "obsidian": "latest",
+    "tslib": "latest",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  }
+}
