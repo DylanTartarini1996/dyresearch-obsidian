@@ -1,0 +1,38 @@
+name: Build DyResearch Plugin
+
+on:
+  push:
+    branches:
+      - 'main'
+  workflow_dispatch:
+
+jobs:
+  # --- BUILD THE OBSIDIAN PLUGIN ---
+  build-plugin:
+    name: Build Obsidian Plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'package.json'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build Plugin
+        run: npm run build # This creates main.js
+
+      - name: Upload Plugin Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dyresearch
+          path: |
+            dist/main.js
+            manifest.json
+            styles.css
