@@ -53,6 +53,8 @@
     line-height: 1.6;
     max-width: 100%;
     color: var(--text-normal);
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 /* --- Streaming Components (NEW) --- */
@@ -69,6 +71,8 @@
     border-radius: 4px;
     white-space: pre-wrap;
     line-height: 1.4;
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 /* Status indicator for tool usage and transfers */
