@@ -73,7 +73,7 @@ GOOGLE_MODEL_NAME=gemini-3.1-flash-lite-preview
 EMBEDDINGS_TYPE=google
 EMBEDDINGS_MODEL_NAME=gemini-embedding-001
 ```
-![settings](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/settings.png)
+![settings](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_settings.png)
 ---
 
 ## 💻 Local Development
