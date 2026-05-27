@@ -1,8 +1,16 @@
-# DyResearch
+# 👨🏻‍🎓 DyResearch
 
 Typescript Plugin for a [Multi-Agent AI system](https://github.com/DylanTartarini1996/dyresearch) designed to aid in studying, learning, and researching topics
 
-![enable](assets/obsidian_enable_plugin.png)
+>[!WARNING]
+> 
+> To use the DyResearch plugin, the user needs to have the [DyResearch Server](https://github.com/DylanTartarini1996/dyresearch) running. 
+> Make sure to either: 
+>    - having cloned the repo and started the python server
+>    - having downloaded and run the standalone installer  
+
+
+![enable](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_enable_plugin.png)
 
 ---
 ## 🧩 Plugin Functionalities
@@ -15,7 +23,7 @@ The DyResearch Obsidian plugin bridges your knowledge base with the intelligent 
 - History Sync: Review previous chat history and retrieve context from past interactions.
 - Note Taking: Automatically digest information into structured notes with support for Mermaid.js diagrams.
 
-![screen](assets/obsidian_screen.png)
+![screen](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_screen.png)
 
 ---
 
@@ -65,7 +73,7 @@ GOOGLE_MODEL_NAME=gemini-3.1-flash-lite-preview
 EMBEDDINGS_TYPE=google
 EMBEDDINGS_MODEL_NAME=gemini-embedding-001
 ```
-![settings](assets/obsidian_settings.png)
+![settings](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/settings.png)
 ---
 
 ## 💻 Local Development
