@@ -634,11 +634,23 @@ export class HistoryView extends ItemView {
     }
 }
 
+interface DyResearchSettings {
+    chatWidth: string;
+    chatHeight: string;
+}
+
+const DEFAULT_SETTINGS: DyResearchSettings = {
+    chatWidth: '650px',
+    chatHeight: '80vh',
+};
+
 export default class DyResearchPlugin extends Plugin {
     public currentSessionId: string = `obsidian_${Date.now()}`;
     public userId: string = 'dyresearch_plugin_user';
+    public settings: DyResearchSettings;
 
     async onload() {
+        await this.loadSettings();
 
         this.addSettingTab(new DyResearchSettingTab(this.app, this));
 
@@ -662,6 +674,14 @@ export default class DyResearchPlugin extends Plugin {
         }
         workspace.revealLeaf(leaf);
     }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
 }
 
 export class ChatModal extends Modal {
@@ -676,7 +696,86 @@ export class ChatModal extends Modal {
         const { contentEl } = this;
         contentEl.addClass('dy-chat-modal');
         
-        contentEl.createEl('h2', { text: '🤖 DyResearch Assistant' });
+        // Apply saved modal size from settings
+        const modalEl = contentEl.closest('.modal') as HTMLElement;
+        if (modalEl) {
+            modalEl.style.width = this.plugin.settings.chatWidth;
+            modalEl.style.height = this.plugin.settings.chatHeight;
+        }
+
+        // Add custom drag-to-resize handle at the bottom-right corner
+        const resizeHandle = contentEl.createDiv({ cls: 'modal-resize-handle' });
+        if (modalEl) {
+            resizeHandle.addEventListener('pointerdown', (e: PointerEvent) => {
+                e.preventDefault();
+                const startWidth = modalEl.offsetWidth;
+                const startHeight = modalEl.offsetHeight;
+                const startX = e.clientX;
+                const startY = e.clientY;
+
+                const onPointerMove = (moveEvent: PointerEvent) => {
+                    const newWidth = Math.max(400, startWidth + (moveEvent.clientX - startX));
+                    const newHeight = Math.max(300, startHeight + (moveEvent.clientY - startY));
+                    modalEl.style.width = `${newWidth}px`;
+                    modalEl.style.height = `${newHeight}px`;
+                };
+
+                const onPointerUp = () => {
+                    document.removeEventListener('pointermove', onPointerMove);
+                    document.removeEventListener('pointerup', onPointerUp);
+                    
+                    this.plugin.settings.chatWidth = modalEl.style.width;
+                    this.plugin.settings.chatHeight = modalEl.style.height;
+                    this.plugin.saveSettings();
+                };
+
+                document.addEventListener('pointermove', onPointerMove);
+                document.addEventListener('pointerup', onPointerUp);
+            });
+        }
+        
+        const headerEl = contentEl.createEl('h2', { text: '🤖 DyResearch Assistant', cls: 'chat-modal-header' });
+        
+        if (modalEl) {
+            headerEl.addEventListener('pointerdown', (e: PointerEvent) => {
+                if (e.button !== 0) return; // Only left click drags
+                e.preventDefault(); // Prevent text selection
+                
+                const rect = modalEl.getBoundingClientRect();
+                const parentEl = modalEl.parentElement;
+                if (!parentEl) return;
+                const parentRect = parentEl.getBoundingClientRect();
+                
+                modalEl.style.position = 'absolute';
+                modalEl.style.margin = '0';
+                
+                const startLeft = rect.left - parentRect.left;
+                const startTop = rect.top - parentRect.top;
+                
+                const startX = e.clientX;
+                const startY = e.clientY;
+
+                const onPointerMove = (moveEvent: PointerEvent) => {
+                    const deltaX = moveEvent.clientX - startX;
+                    const deltaY = moveEvent.clientY - startY;
+                    
+                    const newLeft = Math.max(0, Math.min(parentRect.width - rect.width, startLeft + deltaX));
+                    const newTop = Math.max(0, Math.min(parentRect.height - rect.height, startTop + deltaY));
+                    
+                    modalEl.style.left = `${newLeft}px`;
+                    modalEl.style.top = `${newTop}px`;
+                };
+
+                const onPointerUp = () => {
+                    document.removeEventListener('pointermove', onPointerMove);
+                    document.removeEventListener('pointerup', onPointerUp);
+                };
+
+                document.addEventListener('pointermove', onPointerMove);
+                document.addEventListener('pointerup', onPointerUp);
+            });
+        }
+
         contentEl.createEl('p', { 
             text: `Session: ${this.plugin.currentSessionId}`, 
             cls: 'chat-session-id' 
@@ -701,79 +800,114 @@ export class ChatModal extends Modal {
         
         // Input Setup
         const inputContainer = contentEl.createDiv({ cls: 'chat-input-container' });
-        const inputField = inputContainer.createEl('input', { 
-            type: 'text', 
-            placeholder: 'Type your message...' 
+        const inputField = inputContainer.createEl('textarea', { 
+            placeholder: 'Type your message...',
+            cls: 'chat-input-textarea'
         });
+        inputField.rows = 1;
         inputField.focus();
 
+        let isManuallyResized = false;
+
+        // Detect if the user clicks and drags the native resize handle (bottom-right corner)
+        inputField.addEventListener('pointerdown', (e: PointerEvent) => {
+            const rect = inputField.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            // Native resize handles are typically ~20px in size in the bottom-right corner
+            if (rect.width - x < 20 && rect.height - y < 20) {
+                isManuallyResized = true;
+                inputField.style.maxHeight = 'none'; // Remove max-height limit when user manually resizes
+            }
+        });
+
+        // Auto-resize height based on text content (only when not manually resized)
+        inputField.addEventListener('input', () => {
+            if (!isManuallyResized) {
+                inputField.style.height = 'auto';
+                inputField.style.height = `${inputField.scrollHeight}px`;
+            } else if (inputField.value === '') {
+                // Reset manual resize flag when clearing the input field
+                isManuallyResized = false;
+                inputField.style.maxHeight = '';
+                inputField.style.height = 'auto';
+            }
+        });
+
         inputField.addEventListener('keydown', async (e: KeyboardEvent) => {
-            if (e.key === 'Enter' && inputField.value.trim() !== '') {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
                 const userQuery = inputField.value;
-                inputField.value = '';
+                if (userQuery.trim() !== '') {
+                    inputField.value = '';
+                    isManuallyResized = false;
+                    inputField.style.maxHeight = '';
+                    inputField.style.height = 'auto'; // Reset height
 
-                // Add User Message
-                this.appendSimpleMessage(chatHistory, '👤 You', userQuery);
-                
-                // Set up AI Streaming Area
-                const ai = this.appendStreamingMessage(chatHistory, '🤖 AI');
-                
-                let fullAnswer = "";
-                chatHistory.scrollTop = chatHistory.scrollHeight;
-
-                try {
-                    const response = await fetch('http://localhost:8000/chat/stream', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ 
-                            message: userQuery,
-                            session_id: this.plugin.currentSessionId,
-                            user_id: this.plugin.userId
-                        })
-                    });
-
-                    if (!response.body) throw new Error('No response body');
-
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder();
-
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-
-                        const chunk = decoder.decode(value, { stream: true });
-                        const lines = chunk.split('\n\n');
-
-                        for (const line of lines) {
-                            if (!line.startsWith('data: ')) continue;
-                            
-                            try {
-                                const data = JSON.parse(line.replace('data: ', ''));
-
-                                if (data.type === 'system') {
-                                    ai.statusEl.setText(data.content);
-                                } else if (data.type === 'thinking') {
-                                    ai.thinkingEl.style.display = 'block';
-                                    ai.thinkingEl.innerText += data.content;
-                                } else if (data.type === 'answer') {
-                                    fullAnswer += data.content;
-                                    ai.answerEl.empty();
-                                    await MarkdownRenderer.render(this.app, fullAnswer, ai.answerEl, '', this.plugin);
-                                } else if (data.error) {
-                                    new Notice("AI Error: " + data.error);
-                                }
-                            } catch (parseErr) {
-                                console.error("Error parsing stream chunk", parseErr);
-                            }
-                        }
-                        chatHistory.scrollTop = chatHistory.scrollHeight;
-                    }
+                    // Add User Message
+                    this.appendSimpleMessage(chatHistory, '👤 You', userQuery);
                     
-                    ai.statusEl.setText(""); // Clear status "Using tool..." when finished
+                    // Set up AI Streaming Area
+                    const ai = this.appendStreamingMessage(chatHistory, '🤖 AI');
+                    
+                    let fullAnswer = "";
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
 
-                } catch (err) {
-                    ai.answerEl.setText('❌ Error: Could not reach Python sidecar.');
-                    console.error(err);
+                    try {
+                        const response = await fetch('http://localhost:8000/chat/stream', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                message: userQuery,
+                                session_id: this.plugin.currentSessionId,
+                                user_id: this.plugin.userId
+                            })
+                        });
+
+                        if (!response.body) throw new Error('No response body');
+
+                        const reader = response.body.getReader();
+                        const decoder = new TextDecoder();
+
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+
+                            const chunk = decoder.decode(value, { stream: true });
+                            const lines = chunk.split('\n\n');
+
+                            for (const line of lines) {
+                                if (!line.startsWith('data: ')) continue;
+                                
+                                try {
+                                    const data = JSON.parse(line.replace('data: ', ''));
+
+                                    if (data.type === 'system') {
+                                        ai.statusEl.setText(data.content);
+                                    } else if (data.type === 'thinking') {
+                                        ai.thinkingEl.style.display = 'block';
+                                        ai.thinkingEl.innerText += data.content;
+                                    } else if (data.type === 'answer') {
+                                        fullAnswer += data.content;
+                                        ai.answerEl.empty();
+                                        await MarkdownRenderer.render(this.app, fullAnswer, ai.answerEl, '', this.plugin);
+                                    } else if (data.error) {
+                                        new Notice("AI Error: " + data.error);
+                                    }
+                                } catch (parseErr) {
+                                    console.error("Error parsing stream chunk", parseErr);
+                                }
+                            }
+                            chatHistory.scrollTop = chatHistory.scrollHeight;
+                        }
+                        
+                        ai.statusEl.setText(""); // Clear status "Using tool..." when finished
+
+                    } catch (err) {
+                        ai.answerEl.setText('❌ Error: Could not reach Python sidecar.');
+                        console.error(err);
+                    }
                 }
             }
         });

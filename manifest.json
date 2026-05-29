@@ -1,7 +1,7 @@
 {
     "id": "dyresearch-sidecar",
     "name": "DyResearch AI Sidecar",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "minAppVersion": "0.15.0",
     "description": "Bridge to the DyResearch Agent system built with Google ADK.",
     "author": "Dylan Tartarini",

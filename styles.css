@@ -2,9 +2,47 @@
 .dy-chat-modal {
     display: flex;
     flex-direction: column;
-    height: 85vh;
-    max-height: 900px;
+    height: 100%;
+    position: relative;
 }
+
+.modal:has(.dy-chat-modal) {
+    max-width: 95vw;
+    max-height: 95vh;
+    min-width: 400px;
+    min-height: 300px;
+}
+
+.modal-resize-handle {
+    position: absolute;
+    bottom: 0px;
+    right: 0px;
+    width: 14px;
+    height: 14px;
+    cursor: se-resize;
+    z-index: 1000;
+    opacity: 0.4;
+    transition: opacity 0.2s ease;
+    border-bottom: 2px solid var(--text-muted);
+    border-right: 2px solid var(--text-muted);
+}
+
+.modal-resize-handle:hover {
+    opacity: 0.9;
+    border-bottom-color: var(--interactive-accent);
+    border-right-color: var(--interactive-accent);
+}
+
+.chat-modal-header {
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.chat-modal-header:active {
+    cursor: grabbing;
+}
+
 
 .chat-session-id {
     font-size: 0.75rem;
@@ -98,7 +136,8 @@
     gap: 12px;
 }
 
-.chat-input-container input {
+.chat-input-container input,
+.chat-input-container .chat-input-textarea {
     flex-grow: 1;
     padding: 12px;
     border-radius: 8px;
@@ -107,9 +146,21 @@
     box-shadow: var(--input-shadow);
 }
 
-.chat-input-container input:focus {
+.chat-input-container .chat-input-textarea {
+    resize: vertical; /* Allow manual vertical resizing */
+    min-height: 42px;
+    max-height: 200px;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: 1.4;
+    overflow-y: auto;
+}
+
+.chat-input-container input:focus,
+.chat-input-container .chat-input-textarea:focus {
     border-color: var(--interactive-accent);
     box-shadow: 0 0 0 2px var(--background-modifier-accent-alpha);
+    outline: none;
 }
 
 /* --- Sidebar: History & Library --- */
