@@ -1,19 +1,15 @@
 # 👨🏻‍🎓 DyResearch
 
-Typescript Plugin for a [Multi-Agent AI system](https://github.com/DylanTartarini1996/dyresearch) designed to aid in studying, learning, and researching topics
+Typescript Plugin for a [Multi-Agent AI system](https://github.com/DylanTartarini1996/dyresearch) designed to aid in studying, learning, and researching topics.
 
->[!WARNING]
-> 
+>[!WARNING]. 
+>
 > To use the DyResearch plugin, the user needs to have the [DyResearch Server](https://github.com/DylanTartarini1996/dyresearch) running. 
-> Make sure to either: 
->    - having cloned the repo and started the python server
->    - having downloaded and run the standalone installer  
+> Make sure to having cloned the repo and started the python server 
 
-
-![enable](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_enable_plugin.png)
 
 ---
-## 🧩 Plugin Functionalities
+## 🧩 Functionalities
 
 The DyResearch Obsidian plugin bridges your knowledge base with the intelligent backend, providing:
 
@@ -21,7 +17,7 @@ The DyResearch Obsidian plugin bridges your knowledge base with the intelligent 
 - Knowledge Management: Seamlessly ingest documents into the vector store for RAG-powered retrieval.
 - Session Management: Create, rename, delete, and search through your AI chat sessions directly from Obsidian.
 - History Sync: Review previous chat history and retrieve context from past interactions.
-- Note Taking: Automatically digest information into structured notes with support for Mermaid.js diagrams.
+- Note Taking: Automatically digest information into structured notes with support for Mermaid.js diagrams.  
 
 ![screen](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_screen.png)
 
@@ -48,32 +44,34 @@ Manages the organization of knowledge within the system. As the owner of the vec
 Autonomously navigates the web to find new information, discover fresh sources, and expand the knowledge base, providing up-to-date context to the rest of the system.
 
 ### 🧑🏻‍💻 Note Taker
-Responsible for digesting complex information into structured, useful notes specifically formatted for [Obsidian](https://obsidian.md/) or other Markdown tools:
+Responsible for digesting complex information into structured, useful notes specifically formatted for Obsidian:
 - Takes detailed notes in `.md` format.
 - Generates graphs and mind maps using Mermaid.js syntax.
 
 ---
 
-## ⚙️ Environment Configuration
+## ⚙️ Setup
+In order to setup the plugin, you need to enable it and configure its environment variables such as memory storage and AI agents API Keys / endpoints. 
+ 
+### ✅ Enable Plugin
 
-If you are running the backend yourself, ensure your `config.env` is configured in the root directory:
+First, install the plugin directly browsing it via the community portal and enable it from Obsidian's settings.
 
-```env
-# Database Config
-POSTGRES_USER=adk_user
-POSTGRES_PASSWORD=adk_password
-POSTGRES_DB=adk_history
+![enable](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_enable_plugin.png)
 
-# LLM Providers (Google, Groq, Ollama)
-GOOGLE_API_KEY=your_api_key
-GROQ_API_KEY=your_api_key
-GOOGLE_MODEL_NAME=gemini-3.1-flash-lite-preview
+### 🔧 Environment Configuration
 
-# Embeddings
-EMBEDDINGS_TYPE=google
-EMBEDDINGS_MODEL_NAME=gemini-embedding-001
-```
-![settings](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_settings.png)
+You can set up the configuration for session storage and agents in two ways:
+
+1. Option one is to use the Obsidian's settings UI: 
+   - Open the **DyResearch** settings page within Obsidian.
+   - Configure the API endpoint and credentials provided by your hosting service.
+   - *Note: For standalone use, the system will automatically instantiate a local SQLite instance coupled with LanceDB to manage your vector data and session history locally. -> if you rather use postgres on your machine, point to it via the settings page*
+
+    ![restart](assets/obsidian_enable_plugin.png)
+
+2. Second option is to ensure a `config.env` file is correctly populated in the root directory of the [Python server](https://github.com/DylanTartarini1996/dyresearch) with your API keys, the session storage URI and the obsidian vault path. More info and example on that repo. 
+
 ---
 
 ## 💻 Local Development
@@ -81,6 +79,7 @@ EMBEDDINGS_MODEL_NAME=gemini-embedding-001
 build the plugin after having modified `main.ts` or `styles.css`
 
 ```bash
-    npm install
-    npx tsup main.ts --format cjs --external obsidian
+
+npm install
+npx tsup main.ts --format cjs --external obsidian
 ```
