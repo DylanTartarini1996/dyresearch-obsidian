@@ -244,7 +244,10 @@ export class HistoryView extends ItemView {
         setIcon(newChatBtn, 'plus');
         newChatBtn.onClickEvent(() => {
             this.plugin.currentSessionId = `obsidian_${Date.now()}`;
-            new ChatModal(this.app, this.plugin).open();
+            this.plugin.openOrCreateChat();
+            if (this.plugin.activeChatModal) {
+                this.plugin.activeChatModal.switchSession(this.plugin.currentSessionId);
+            }
             this.refreshView();
         });
 
@@ -334,16 +337,16 @@ export class HistoryView extends ItemView {
 
                     const deleteBtn = titleContainer.createEl("button", { cls: "dy-delete-btn", attr: { "aria-label": "Delete Session" } });
                     setIcon(deleteBtn, 'trash');
-
                     const date = new Date(item.last_updated).toLocaleDateString();
-                    //sessionEl.createEl("div", { text: item.session_id, cls: "session-name" });
                     sessionEl.createEl("small", { text: `Last activity: ${date}` });
-                    // Open chat on click (make sure we don't trigger this when clicking the edit button)
+                    // Open chat on click
                     sessionEl.onClickEvent((e) => {
-                        // Prevent opening if the user is currently typing in the input box
                         if ((e.target as HTMLElement).tagName === 'INPUT') return;
                         this.plugin.currentSessionId = item.session_id;
-                        new ChatModal(this.app, this.plugin).open();
+                        this.plugin.openOrCreateChat();
+                        if (this.plugin.activeChatModal) {
+                            this.plugin.activeChatModal.switchSession(item.session_id);
+                        }
                         this.refreshView();
                     });
 
@@ -648,21 +651,30 @@ export default class DyResearchPlugin extends Plugin {
     public currentSessionId: string = `obsidian_${Date.now()}`;
     public userId: string = 'dyresearch_plugin_user';
     public settings: DyResearchSettings;
+    // TRACK THE SINGLE ACTIVE MODAL INSTANCE
+    public activeChatModal: ChatModal | null = null;
 
     async onload() {
         await this.loadSettings();
-
         this.addSettingTab(new DyResearchSettingTab(this.app, this));
-
         this.registerView(VIEW_TYPE_HISTORY, (leaf) => new HistoryView(leaf, this));
-
         this.addRibbonIcon('bot', 'DyResearch Chat', () => {
-            new ChatModal(this.app, this).open();
+           this.openOrCreateChat();
         });
 
         this.addRibbonIcon('history', 'View History', () => {
             this.activateView();
         });
+    }
+
+    // Centralized controller to enforce a single chat instance
+    public openOrCreateChat() {
+        if (this.activeChatModal) {
+            this.activeChatModal.unminimize();
+            return;
+        }
+        this.activeChatModal = new ChatModal(this.app, this);
+        this.activeChatModal.open();
     }
 
     async activateView() {
@@ -686,6 +698,13 @@ export default class DyResearchPlugin extends Plugin {
 
 export class ChatModal extends Modal {
     plugin: DyResearchPlugin;
+    private isMinimized: boolean = false;
+    private savedHeight: string = '';
+
+    // Component pointers for state switching
+    private minBtn: HTMLElement;
+    private mainBodyWrapper: HTMLElement;
+    private chatHistory: HTMLElement;
 
     constructor(app: App, plugin: DyResearchPlugin) {
         super(app);
@@ -696,58 +715,88 @@ export class ChatModal extends Modal {
         const { contentEl } = this;
         contentEl.addClass('dy-chat-modal');
         
-        // Apply saved modal size from settings
         const modalEl = contentEl.closest('.modal') as HTMLElement;
+        
+        // NON-BLOCKING CONFIGURATION (keep background interactive)
         if (modalEl) {
+            modalEl.addClass('dy-chat-modal-parent');
+            // if (this.bgEl) this.bgEl.style.display = 'none';
+            modalEl.parentElement.style.pointerEvents = 'none'; // Let clicks pass through the container wrapper
+            modalEl.style.pointerEvents = 'auto'; // Catch clicks on the chat window itself
+            // Absolute positioning prevents the modal from snapping when dragged
+            modalEl.style.position = 'absolute';
+            modalEl.style.margin = '0';
             modalEl.style.width = this.plugin.settings.chatWidth;
             modalEl.style.height = this.plugin.settings.chatHeight;
+            // Remove native padding so minimized header doesn't get crushed!
+            modalEl.style.padding = '0';
+            // Hide default top-right close button to use our clean header controls instead
+            const defaultCloseBtn = modalEl.querySelector('.modal-close-button') as HTMLElement;
+            if (defaultCloseBtn) defaultCloseBtn.style.display = 'none';
         }
 
-        // Add custom drag-to-resize handle at the bottom-right corner
-        const resizeHandle = contentEl.createDiv({ cls: 'modal-resize-handle' });
+        // CONTROLLED HEADER (Drag zone + Minimize/Close buttons)
+        const headerContainer = contentEl.createDiv({ cls: 'chat-modal-header-wrapper' });
+        headerContainer.style.display = 'flex';
+        headerContainer.style.justifyContent = 'space-between';
+        headerContainer.style.alignItems = 'center';
+        headerContainer.style.cursor = 'grab';
+        headerContainer.style.padding = '10px 14px';
+        headerContainer.style.borderBottom = '1px solid var(--background-modifier-border)';
+        // Double click the header bar to quickly minimize/maximize
+        headerContainer.addEventListener('dblclick', (e) => {
+            if ((e.target as HTMLElement).closest('button')) return; // Don't trigger if clicking buttons
+            this.toggleMinimize();
+        });
+
+        const headerTitle = headerContainer.createEl('h2', { text: '🤖 DyResearch Assistant', cls: 'chat-modal-header' });
+
+        const controlsContainer = headerContainer.createDiv({ cls: 'chat-modal-controls' });
+
+        this.minBtn = controlsContainer.createEl('button', { cls: 'clickable-icon', attr: { "aria-label": "Minimize" } });
+        this.minBtn.style.width = '24px';
+        this.minBtn.style.height = '24px';
+        setIcon(this.minBtn, 'minus');
+
+        const closeBtn = controlsContainer.createEl('button', { cls: 'clickable-icon', attr: { "aria-label": "Close" } });
+        closeBtn.style.width = '24px';
+        closeBtn.style.height = '24px';
+        setIcon(closeBtn, 'x');
+
+        // Main body content wrapper
+        this.mainBodyWrapper = contentEl.createDiv({ cls: 'chat-main-body-wrapper' });
+        this.mainBodyWrapper.style.display = 'flex';
+        this.mainBodyWrapper.style.flexDirection = 'column';
+        this.mainBodyWrapper.style.padding = '14px';
+        this.mainBodyWrapper.style.flexGrow = '1';
+
+        // MINIMIZE LOGIC
+        this.minBtn.onClickEvent((e) => {
+            e.stopPropagation();
+            this.toggleMinimize();
+        });
+
+        closeBtn.onClickEvent((e) => {
+            e.stopPropagation();
+            this.close();
+        });
+
+        closeBtn.onClickEvent((e) => {
+            e.stopPropagation();
+            this.close();
+        });
+
+        // DRAG TO MOVE WINDOW
         if (modalEl) {
-            resizeHandle.addEventListener('pointerdown', (e: PointerEvent) => {
+            headerContainer.addEventListener('pointerdown', (e: PointerEvent) => {
+                if (e.button !== 0) return; 
+                if ((e.target as HTMLElement).closest('button')) return;
                 e.preventDefault();
-                const startWidth = modalEl.offsetWidth;
-                const startHeight = modalEl.offsetHeight;
-                const startX = e.clientX;
-                const startY = e.clientY;
-
-                const onPointerMove = (moveEvent: PointerEvent) => {
-                    const newWidth = Math.max(400, startWidth + (moveEvent.clientX - startX));
-                    const newHeight = Math.max(300, startHeight + (moveEvent.clientY - startY));
-                    modalEl.style.width = `${newWidth}px`;
-                    modalEl.style.height = `${newHeight}px`;
-                };
-
-                const onPointerUp = () => {
-                    document.removeEventListener('pointermove', onPointerMove);
-                    document.removeEventListener('pointerup', onPointerUp);
-                    
-                    this.plugin.settings.chatWidth = modalEl.style.width;
-                    this.plugin.settings.chatHeight = modalEl.style.height;
-                    this.plugin.saveSettings();
-                };
-
-                document.addEventListener('pointermove', onPointerMove);
-                document.addEventListener('pointerup', onPointerUp);
-            });
-        }
-        
-        const headerEl = contentEl.createEl('h2', { text: '🤖 DyResearch Assistant', cls: 'chat-modal-header' });
-        
-        if (modalEl) {
-            headerEl.addEventListener('pointerdown', (e: PointerEvent) => {
-                if (e.button !== 0) return; // Only left click drags
-                e.preventDefault(); // Prevent text selection
                 
                 const rect = modalEl.getBoundingClientRect();
                 const parentEl = modalEl.parentElement;
                 if (!parentEl) return;
                 const parentRect = parentEl.getBoundingClientRect();
-                
-                modalEl.style.position = 'absolute';
-                modalEl.style.margin = '0';
                 
                 const startLeft = rect.left - parentRect.left;
                 const startTop = rect.top - parentRect.top;
@@ -776,30 +825,105 @@ export class ChatModal extends Modal {
             });
         }
 
-        contentEl.createEl('p', { 
-            text: `Session: ${this.plugin.currentSessionId}`, 
+        this.chatHistory = this.mainBodyWrapper.createDiv({ cls: 'chat-history' });
+        await this.loadSessionContent(this.plugin.currentSessionId);
+
+        // DRAG TO RESIZE
+        const resizeHandle = contentEl.createDiv({ cls: 'modal-resize-handle' });
+        if (modalEl) {
+            resizeHandle.addEventListener('pointerdown', (e: PointerEvent) => {
+                if (this.isMinimized) return; 
+                e.preventDefault();
+                const startWidth = modalEl.offsetWidth;
+                const startHeight = modalEl.offsetHeight;
+                const startX = e.clientX;
+                const startY = e.clientY;
+
+                const onPointerMove = (moveEvent: PointerEvent) => {
+                    const newWidth = Math.max(400, startWidth + (moveEvent.clientX - startX));
+                    const newHeight = Math.max(300, startHeight + (moveEvent.clientY - startY));
+                    modalEl.style.width = `${newWidth}px`;
+                    modalEl.style.height = `${newHeight}px`;
+                };
+
+                const onPointerUp = () => {
+                    document.removeEventListener('pointermove', onPointerMove);
+                    document.removeEventListener('pointerup', onPointerUp);
+                    
+                    this.plugin.settings.chatWidth = modalEl.style.width;
+                    this.plugin.settings.chatHeight = modalEl.style.height;
+                    this.plugin.saveSettings();
+                };
+
+                document.addEventListener('pointermove', onPointerMove);
+                document.addEventListener('pointerup', onPointerUp);
+            });
+        }
+    }
+
+    // Helper to toggle minimize state
+    private toggleMinimize() {
+        const modalEl = this.contentEl.closest('.modal') as HTMLElement;
+        if (!modalEl) return;
+
+        this.isMinimized = !this.isMinimized;
+        if (this.isMinimized) {
+            this.savedHeight = modalEl.style.height;
+            modalEl.style.height = '46px';
+            this.mainBodyWrapper.style.display = 'none';
+            this.contentEl.style.overflow = 'hidden';
+            setIcon(this.minBtn, 'plus');
+            this.minBtn.setAttribute('aria-label', 'Expand');
+        } else {
+            modalEl.style.height = this.savedHeight || this.plugin.settings.chatHeight;
+            this.mainBodyWrapper.style.display = 'flex';
+            this.contentEl.style.overflow = '';
+            setIcon(this.minBtn, 'minus');
+            this.minBtn.setAttribute('aria-label', 'Minimize');
+        }
+    }
+
+    // Public method called if user triggers ribbon while minimized
+    public unminimize() {
+        if (this.isMinimized) this.toggleMinimize();
+        
+    }
+
+    // Swaps internal history gracefully without breaking components
+    public async switchSession(sessionId: string) {
+        this.unminimize();
+        await this.loadSessionContent(sessionId);
+    }
+
+    private async loadSessionContent(sessionId: string) {
+        this.chatHistory.empty();
+        
+        // Re-inject Session ID subtitle
+        const sessionTitle = this.chatHistory.createEl('p', { 
+            text: `Session: ${sessionId}`, 
             cls: 'chat-session-id' 
         });
+        sessionTitle.style.order = "-100"; // Ensure it stays pinned at the very top
 
-        const chatHistory = contentEl.createDiv({ cls: 'chat-history' });
-        
-        //  Load History
         try {
-            const historyResponse = await fetch(`http://localhost:8000/sessions/${this.plugin.currentSessionId}/messages`);
+            const historyResponse = await fetch(`http://localhost:8000/sessions/${sessionId}/messages`);
             const messages = await historyResponse.json();
             
             for (const msg of messages) {
                 const senderLabel = msg.role === 'user' ? '👤 You' : '🤖 AI';
-                const msgDiv = this.appendSimpleMessage(chatHistory, senderLabel, '');
+                const msgDiv = this.appendSimpleMessage(this.chatHistory, senderLabel, '');
                 await MarkdownRenderer.render(this.app, msg.content, msgDiv, '', this.plugin);
             }
-            chatHistory.scrollTop = chatHistory.scrollHeight;
+            this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
         } catch (err) {
             console.error("Could not load session history", err);
         }
-        
-        // Input Setup
-        const inputContainer = contentEl.createDiv({ cls: 'chat-input-container' });
+
+        // Setup/Refresh Text Input Area
+        let oldInput = this.mainBodyWrapper.querySelector('.chat-input-container');
+        if (oldInput) oldInput.remove();
+
+        const inputContainer = this.mainBodyWrapper.createDiv({ cls: 'chat-input-container' });
         const inputField = inputContainer.createEl('textarea', { 
             placeholder: 'Type your message...',
             cls: 'chat-input-textarea'
@@ -808,27 +932,19 @@ export class ChatModal extends Modal {
         inputField.focus();
 
         let isManuallyResized = false;
-
-        // Detect if the user clicks and drags the native resize handle (bottom-right corner)
         inputField.addEventListener('pointerdown', (e: PointerEvent) => {
             const rect = inputField.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            
-            // Native resize handles are typically ~20px in size in the bottom-right corner
-            if (rect.width - x < 20 && rect.height - y < 20) {
+            if (rect.width - (e.clientX - rect.left) < 20 && rect.height - (e.clientY - rect.top) < 20) {
                 isManuallyResized = true;
-                inputField.style.maxHeight = 'none'; // Remove max-height limit when user manually resizes
+                inputField.style.maxHeight = 'none';
             }
         });
 
-        // Auto-resize height based on text content (only when not manually resized)
         inputField.addEventListener('input', () => {
             if (!isManuallyResized) {
                 inputField.style.height = 'auto';
                 inputField.style.height = `${inputField.scrollHeight}px`;
             } else if (inputField.value === '') {
-                // Reset manual resize flag when clearing the input field
                 isManuallyResized = false;
                 inputField.style.maxHeight = '';
                 inputField.style.height = 'auto';
@@ -843,16 +959,11 @@ export class ChatModal extends Modal {
                     inputField.value = '';
                     isManuallyResized = false;
                     inputField.style.maxHeight = '';
-                    inputField.style.height = 'auto'; // Reset height
+                    inputField.style.height = 'auto';
 
-                    // Add User Message
-                    this.appendSimpleMessage(chatHistory, '👤 You', userQuery);
-                    
-                    // Set up AI Streaming Area
-                    const ai = this.appendStreamingMessage(chatHistory, '🤖 AI');
-                    
-                    let fullAnswer = "";
-                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                    this.appendSimpleMessage(this.chatHistory, '👤 You', userQuery);
+                    const ai = this.appendStreamingMessage(this.chatHistory, '🤖 AI');
+                    this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
 
                     try {
                         const response = await fetch('http://localhost:8000/chat/stream', {
@@ -866,9 +977,9 @@ export class ChatModal extends Modal {
                         });
 
                         if (!response.body) throw new Error('No response body');
-
                         const reader = response.body.getReader();
                         const decoder = new TextDecoder();
+                        let fullAnswer = "";
 
                         while (true) {
                             const { done, value } = await reader.read();
@@ -879,55 +990,40 @@ export class ChatModal extends Modal {
 
                             for (const line of lines) {
                                 if (!line.startsWith('data: ')) continue;
-                                
                                 try {
                                     const data = JSON.parse(line.replace('data: ', ''));
-
-                                    if (data.type === 'system') {
-                                        ai.statusEl.setText(data.content);
-                                    } else if (data.type === 'thinking') {
+                                    if (data.type === 'system') ai.statusEl.setText(data.content);
+                                    else if (data.type === 'thinking') {
                                         ai.thinkingEl.style.display = 'block';
                                         ai.thinkingEl.innerText += data.content;
                                     } else if (data.type === 'answer') {
                                         fullAnswer += data.content;
                                         ai.answerEl.empty();
                                         await MarkdownRenderer.render(this.app, fullAnswer, ai.answerEl, '', this.plugin);
-                                    } else if (data.error) {
-                                        new Notice("AI Error: " + data.error);
-                                    }
-                                } catch (parseErr) {
-                                    console.error("Error parsing stream chunk", parseErr);
-                                }
+                                    } else if (data.error) new Notice("AI Error: " + data.error);
+                                } catch (pErr) {}
                             }
-                            chatHistory.scrollTop = chatHistory.scrollHeight;
+                            this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
                         }
-                        
-                        ai.statusEl.setText(""); // Clear status "Using tool..." when finished
-
+                        ai.statusEl.setText("");
                     } catch (err) {
                         ai.answerEl.setText('❌ Error: Could not reach Python sidecar.');
-                        console.error(err);
                     }
                 }
             }
         });
     }
 
-    // Creates a structured message area for streaming AI responses
     appendStreamingMessage(container: HTMLElement, sender: string) {
         const msgWrapper = container.createDiv({ cls: 'chat-msg-wrapper' });
         msgWrapper.createEl('small', { text: sender, cls: 'chat-sender' });
-        
         const statusEl = msgWrapper.createDiv({ cls: 'chat-status-indicator' });
         const thinkingEl = msgWrapper.createDiv({ cls: 'chat-thinking-block' });
         const answerEl = msgWrapper.createDiv({ cls: 'chat-msg-content' });
-        
-        thinkingEl.style.display = 'none'; // Hidden until 'thinking' tokens arrive
-
+        thinkingEl.style.display = 'none';
         return { statusEl, thinkingEl, answerEl };
     }
 
-    // Creates a simple message area for users or history loading
     appendSimpleMessage(container: HTMLElement, sender: string, text: string): HTMLElement {
         const msgWrapper = container.createDiv({ cls: 'chat-msg-wrapper' });
         msgWrapper.createEl('small', { text: sender, cls: 'chat-sender' });
@@ -935,7 +1031,8 @@ export class ChatModal extends Modal {
     }
 
     onClose() {
-        const { contentEl } = this;
-        contentEl.empty();
+        // Break references cleanly on exit
+        this.plugin.activeChatModal = null;
+        this.contentEl.empty();
     }
 }

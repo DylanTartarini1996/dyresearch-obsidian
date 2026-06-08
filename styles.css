@@ -4,13 +4,91 @@
     flex-direction: column;
     height: 100%;
     position: relative;
+    padding: 0; /* Let internal wrappers handle layout padding */
 }
 
-.modal:has(.dy-chat-modal) {
+/* Style the parent floating modal shell safely without performance overhead */
+.modal.dy-chat-modal-parent {
     max-width: 95vw;
     max-height: 95vh;
     min-width: 400px;
-    min-height: 300px;
+    min-height: 50px; /* Allow collapsing down completely when minimized */
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    box-shadow: 0 12px 32px rgba(129, 6, 117, 0.4); /* Floating elevation depth */
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* Header Container for drag zone and action buttons */
+.chat-modal-header-wrapper {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    background-color: var(--background-secondary);
+    border-bottom: 1px solid var(--background-modifier-border);
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.chat-modal-header-wrapper:active {
+    cursor: grabbing;
+}
+
+.chat-modal-header {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+}
+
+/* Window Minimize & Close Buttons Container */
+.chat-modal-controls {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: nowrap; /* Forces buttons to stay in a single row */
+    flex-shrink: 0;    /* Prevents the button group from compressing */
+}
+
+.chat-modal-controls button.clickable-icon {
+    background: transparent;
+    border: none;
+    padding: 4px;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.chat-modal-controls button.clickable-icon:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.chat-modal-controls button.clickable-icon[aria-label="Close"]:hover {
+    background-color: var(--background-modifier-error-hover);
+    color: var(--text-error);
+}
+
+/* .chat-modal-header {
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+} */
+
+/* Body Wrapper that holds history and inputs */
+.chat-main-body-wrapper {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+    padding: 14px;
+    overflow: hidden;
+    height: calc(100% - 45px); /* Forces children to scale relative to header size */
 }
 
 .modal-resize-handle {
@@ -21,7 +99,7 @@
     height: 14px;
     cursor: se-resize;
     z-index: 1000;
-    opacity: 0.4;
+    opacity: 0.3;
     transition: opacity 0.2s ease;
     border-bottom: 2px solid var(--text-muted);
     border-right: 2px solid var(--text-muted);
@@ -33,22 +111,12 @@
     border-right-color: var(--interactive-accent);
 }
 
-.chat-modal-header {
-    cursor: grab;
-    user-select: none;
-    -webkit-user-select: none;
-}
-
-.chat-modal-header:active {
-    cursor: grabbing;
-}
-
 
 .chat-session-id {
     font-size: 0.75rem;
     color: var(--text-muted);
-    margin-top: -10px;
-    margin-bottom: 20px;
+    margin-top: 0px;
+    margin-bottom: 12px;
     font-family: var(--font-monospace);
     opacity: 0.7;
 }
@@ -450,8 +518,7 @@
 .library-meta-container {
     display: flex;
     flex-wrap: wrap;
-    column-gap: 12px;
-    row-gap: 4px;
+    gap: 4px 12px;
     font-size: 0.8rem;
     color: var(--text-muted);
     border-top: 1px solid var(--background-modifier-border);
