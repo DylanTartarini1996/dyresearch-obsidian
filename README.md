@@ -1,85 +1,73 @@
 # 👨🏻‍🎓 DyResearch
 
-Typescript Plugin for a [Multi-Agent AI system](https://github.com/DylanTartarini1996/dyresearch) designed to aid in studying, learning, and researching topics.
+A powerful, **serverless** Multi-Agent AI system designed to aid in studying, learning, and researching topics directly inside Obsidian.
 
->[!WARNING]. 
->
-> To use the DyResearch plugin, the user needs to have the [DyResearch Server](https://github.com/DylanTartarini1996/dyresearch) running. 
-> Make sure to having cloned the repo and started the python server 
-
+> [!TIP]
+> **DyResearch 2.0 is now 100% Serverless!**
+> You no longer need to run a separate Python server, SQLite database, or Vector store. The entire multi-agent brain runs natively inside Obsidian using the Google Agent Development Kit (ADK).
 
 ---
 ## 🧩 Functionalities
 
-The DyResearch Obsidian plugin bridges your knowledge base with the intelligent backend, providing:
+The DyResearch Obsidian plugin bridges your knowledge base with an intelligent, local multi-agent system:
 
-- Intelligent Chat: Engage in multi-turn conversations with specialized agents (Professor, Librarian, Researcher) via a chat interface.
-- Knowledge Management: Seamlessly ingest documents into the vector store for RAG-powered retrieval.
-- Session Management: Create, rename, delete, and search through your AI chat sessions directly from Obsidian.
-- History Sync: Review previous chat history and retrieve context from past interactions.
-- Note Taking: Automatically digest information into structured notes with support for Mermaid.js diagrams.  
-
-![screen](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_screen.png)
+- **Intelligent Chat**: Engage in multi-turn conversations with specialized agents (Professor, Librarian, Researcher, NoteTaker) via a seamless chat interface.
+- **Local RAG**: The AI directly reads and searches your local Obsidian Vault.
+- **Session Management**: Chat sessions are persisted as JSON files natively in the `DyResearch/Sessions/` folder. Create, rename, delete, and search them directly.
+- **Library Ingestion**: Upload documents (up to 5MB) into your knowledge base. The Librarian organizes them in `DyResearch/Library/`.
+- **Note Taking**: Automatically digest information into structured notes with support for Mermaid.js diagrams and Semantic Backlinks.
 
 ---
 
 ## 🤖 Agents 
 
-A variety of specialized agents using configurable LLMs work together to process requests:
+A variety of specialized agents using configurable LLMs work together to process requests natively:
 
 ### 👮🏽‍♀️ Coordinator
-The central manager that handles incoming requests from the user and delegates tasks to the appropriate specialized agent.
+The central manager that assesses your request and delegates tasks to the appropriate specialized expert using advanced workflow patterns.
 
 ### 👨🏻‍🏫 Professor
-Handles specific questions and tutoring queries by drawing from its core knowledge or fetching retrieved context directly from the vector store.
+Handles specific questions and tutoring queries by drawing from your local Obsidian notes (Vault First) and expanding out to external sources only when necessary.
 
 ### 👩🏻‍🏫 Librarian
-Manages the organization of knowledge within the system. As the owner of the vector store library, the Librarian can:
-- Ingest documents and chunk them to organize information in the vector store.
-- List available sources by title or index.
-- Index different knowledge bases by subject and query them.
-- Cleanup the library by deleting chunks of a single file or a complete index.
+Manages the organization of knowledge within the system. The Librarian automatically parses uploaded files, categorizes them by subject, and indexes them into the `DyResearch/Library/` folder.
 
 ### 👩🏻‍🔬 Researcher
-Autonomously navigates the web to find new information, discover fresh sources, and expand the knowledge base, providing up-to-date context to the rest of the system.
+Autonomously navigates the web using secure local proxies to find new information, scrape websites, and expand your knowledge base.
 
 ### 🧑🏻‍💻 Note Taker
-Responsible for digesting complex information into structured, useful notes specifically formatted for Obsidian:
-- Takes detailed notes in `.md` format.
-- Generates graphs and mind maps using Mermaid.js syntax.
+Responsible for digesting complex information into structured, useful "Evergreen" notes specifically formatted for Obsidian. It natively handles `[[Backlinks]]` and Vault organization.
 
 ---
 
 ## ⚙️ Setup
-In order to setup the plugin, you need to enable it and configure its environment variables such as memory storage and AI agents API Keys / endpoints. 
- 
+Setup is incredibly simple now that the system is fully serverless.
+
 ### ✅ Enable Plugin
 
-First, install the plugin directly browsing it via the community portal and enable it from Obsidian's settings.
+Install the plugin via the community portal (or manually copy the release folder) and enable it in Obsidian's settings.
 
-![enable](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_enable_plugin.png)
+### 🔧 Configuration
 
-### 🔧 Environment Configuration
-
-You can set up the configuration for session storage and agents in two ways:
-
-1. Option one is to use the Obsidian's settings UI: 
-   - Open the **DyResearch** settings page within Obsidian.
-   - Configure the API endpoint and credentials provided by your hosting service.
-   - *Note: For standalone use, the system will automatically instantiate a local SQLite instance coupled with LanceDB to manage your vector data and session history locally. -> if you rather use postgres on your machine, point to it via the settings page*
-
-    ![restart](assets/obsidian_enable_plugin.png)
-
-2. Second option is to ensure a `config.env` file is correctly populated in the root directory of the [Python server](https://github.com/DylanTartarini1996/dyresearch) with your API keys, the session storage URI and the obsidian vault path. More info and example on that repo. 
+All configurations are managed locally and securely inside Obsidian:
+1. Open the **DyResearch** settings page within Obsidian.
+2. Select your preferred LLM provider for each agent (Gemini, OpenAI, Anthropic).
+3. Insert your API keys directly into the settings UI. They will be stored securely in your local `data.json`.
+4. Close the settings. The Engine will instantly initialize and be ready to use!
 
 ---
 
 ## 💻 Local Development
 
-build the plugin after having modified `main.ts` or `styles.css`
+To develop and test the plugin locally:
 
+1. Clone this repository into your Obsidian Vault's `.obsidian/plugins/` directory.
+2. Run `npm install` to install the dependencies (including the Google ADK).
+3. Run `npm run dev` to start the `esbuild` watcher. This will automatically recompile the plugin whenever you save a file.
+4. Reload the plugin in Obsidian to see your changes instantly.
+
+To build for production:
 ```bash
-
-npm install
-npx tsup main.ts --format cjs --external obsidian
+npm run build
 ```
+This will compile a highly optimized `main.js` bundle using `esbuild`.
