@@ -5,7 +5,8 @@ import {
     LIBRARY_INDEX_DIR,
     listFilesRecursive,
     parseFrontmatter,
-    sanitizeFileName
+    sanitizeFileName,
+    extractPdfTextAndInfo
 } from '../pdf-service';
 
 export function getTeachingTools(app: App) {
@@ -51,10 +52,7 @@ export function getTeachingTools(app: App) {
                 const path = args.path;
                 const exists = await app.vault.adapter.exists(path);
                 if (!exists) return `Note not found at ${path}`;
-                const content = await app.vault.adapter.read(path);
-                return content.length > 18000
-                    ? content.substring(0, 18000) + `\n\n...[Truncated at 18,000 chars out of ${content.length}. Use read_library_document with page or section_query to read further sections.]`
-                    : content;
+                return await app.vault.adapter.read(path);
             }
         }),
         new FunctionTool({
@@ -63,7 +61,7 @@ export function getTeachingTools(app: App) {
             parameters: {
                 type: 'OBJECT' as any,
                 properties: {
-                    query: { type: 'STRING' as any, description: 'Keyword or phrase to search in the indexed library notes and full PDF text.' },
+                    query: { type: 'STRING' as any, description: 'Keyword or phrase to search in the Library Index.' },
                     subject_filter: { type: 'STRING' as any, description: 'Optional subject or topic folder filter (e.g. "machine learning").' }
                 },
                 required: ['query']
@@ -126,13 +124,13 @@ export function getTeachingTools(app: App) {
         }),
         new FunctionTool({
             name: 'read_library_document',
-            description: 'Reads the indexed Markdown note (summary, metadata, and extracted PDF text) from DyResearch/Library Index/ by path or title. Supports reading a specific PDF page number or searching for a specific section/term inside the full PDF text.',
+            description: 'Reads an indexed document in DyResearch/Library Index/ AND can read specific pages or search sections directly from its linked raw PDF in DyResearch/Library/.',
             parameters: {
                 type: 'OBJECT' as any,
                 properties: {
                     path_or_title: { type: 'STRING' as any, description: 'Exact index_path (e.g. "DyResearch/Library Index/Attention_Is_All_You_Need.md") or document title.' },
-                    page: { type: 'NUMBER' as any, description: 'Optional 1-based page number to read from the extracted PDF text.' },
-                    section_query: { type: 'STRING' as any, description: 'Optional keyword/heading (e.g. "Scaled Dot-Product Attention", "Table 1") to extract all matching passages from the full PDF text.' }
+                    page: { type: 'NUMBER' as any, description: 'Optional 1-based page number to read directly from the PDF in DyResearch/Library/.' },
+                    section_query: { type: 'STRING' as any, description: 'Optional keyword, section title, or equation name (e.g. "Scaled Dot-Product Attention", "3.2") to read matching passages directly from the PDF.' }
                 },
                 required: ['path_or_title']
             },
@@ -156,49 +154,54 @@ export function getTeachingTools(app: App) {
                     return `Document "${target}" not found in ${LIBRARY_INDEX_DIR}.`;
                 }
 
-                const content = await app.vault.adapter.read(resolvedPath);
+                const indexContent = await app.vault.adapter.read(resolvedPath);
+                const fm = parseFrontmatter(indexContent);
+                const pdfPath = fm.file_path || '';
 
-                // If a specific page is requested, locate `-- <page> of <total> --`
-                if (args.page && typeof args.page === 'number') {
-                    const pageNum = args.page;
-                    const pageMarkerRegex = new RegExp(`([\\s\\S]*?)\\n-- ${pageNum} of \\d+ --`, 'i');
-                    const prevPageMarker = pageNum > 1 ? new RegExp(`-- ${pageNum - 1} of \\d+ --\\n([\\s\\S]*?)\\n-- ${pageNum} of \\d+ --`, 'i') : null;
+                // If page or section_query is requested, extract from the linked PDF on the fly
+                if ((args.page || args.section_query) && pdfPath && pdfPath.toLowerCase().endsWith('.pdf') && await app.vault.adapter.exists(pdfPath)) {
+                    try {
+                        const pdfBuffer = await app.vault.adapter.readBinary(pdfPath);
+                        const pdfData = await extractPdfTextAndInfo(pdfBuffer);
+                        const fullPdfText = pdfData.text;
 
-                    if (prevPageMarker) {
-                        const m = content.match(prevPageMarker);
-                        if (m) return `### Page ${pageNum} of ${resolvedPath}\n\n${m[1].trim()}`;
-                    } else {
-                        const fullTextIdx = content.indexOf('## Extracted Full Text');
-                        const body = fullTextIdx !== -1 ? content.slice(fullTextIdx) : content;
-                        const m = body.match(pageMarkerRegex);
-                        if (m) return `### Page ${pageNum} of ${resolvedPath}\n\n${m[1].trim()}`;
+                        if (args.page && typeof args.page === 'number') {
+                            const pageNum = args.page;
+                            const pageMarkerRegex = new RegExp(`([\\s\\S]*?)\\n-- ${pageNum} of \\d+ --`, 'i');
+                            const prevPageMarker = pageNum > 1 ? new RegExp(`-- ${pageNum - 1} of \\d+ --\\n([\\s\\S]*?)\\n-- ${pageNum} of \\d+ --`, 'i') : null;
+
+                            if (prevPageMarker) {
+                                const m = fullPdfText.match(prevPageMarker);
+                                if (m) return `${indexContent}\n\n---\n### PDF Page ${pageNum} (${pdfPath}):\n\n${m[1].trim()}`;
+                            } else {
+                                const m = fullPdfText.match(pageMarkerRegex);
+                                if (m) return `${indexContent}\n\n---\n### PDF Page ${pageNum} (${pdfPath}):\n\n${m[1].trim()}`;
+                            }
+                        }
+
+                        if (args.section_query && typeof args.section_query === 'string') {
+                            const q = args.section_query.toLowerCase().trim();
+                            const lower = fullPdfText.toLowerCase();
+                            const excerpts: string[] = [];
+                            let pos = 0;
+                            while (excerpts.length < 6) {
+                                const foundIdx = lower.indexOf(q, pos);
+                                if (foundIdx === -1) break;
+                                const start = Math.max(0, foundIdx - 300);
+                                const end = Math.min(fullPdfText.length, foundIdx + 1000);
+                                excerpts.push(`...\n${fullPdfText.slice(start, end).trim()}\n...`);
+                                pos = foundIdx + q.length + 500;
+                            }
+                            if (excerpts.length > 0) {
+                                return `${indexContent}\n\n---\n### PDF Passages matching "${args.section_query}" (${pdfPath}):\n\n${excerpts.join('\n\n---\n\n')}`;
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Failed to read PDF on the fly:", e);
                     }
                 }
 
-                // If a section_query is provided, return header/summary + all matching windows in the full text
-                if (args.section_query && typeof args.section_query === 'string') {
-                    const q = args.section_query.toLowerCase().trim();
-                    const fullTextIdx = content.indexOf('## Extracted Full Text');
-                    const headerPart = fullTextIdx !== -1 ? content.slice(0, fullTextIdx) : content.slice(0, 2000);
-                    const lower = content.toLowerCase();
-                    const excerpts: string[] = [];
-                    let pos = 0;
-                    while (excerpts.length < 6) {
-                        const foundIdx = lower.indexOf(q, pos);
-                        if (foundIdx === -1) break;
-                        const start = Math.max(0, foundIdx - 300);
-                        const end = Math.min(content.length, foundIdx + 900);
-                        excerpts.push(`...\n${content.slice(start, end).trim()}\n...`);
-                        pos = foundIdx + q.length + 400;
-                    }
-                    if (excerpts.length > 0) {
-                        return `${headerPart}\n### Passages matching "${args.section_query}":\n\n${excerpts.join('\n\n---\n\n')}`;
-                    }
-                }
-
-                return content.length > 18000
-                    ? content.substring(0, 18000) + `\n\n...[Showing first 18,000 of ${content.length} chars. Call read_library_document with page=N or section_query="..." to read specific pages or sections.]`
-                    : content;
+                return indexContent;
             }
         }),
         new FunctionTool({

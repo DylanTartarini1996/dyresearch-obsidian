@@ -4,11 +4,12 @@ import {
     LIBRARY_DIR,
     LIBRARY_INDEX_DIR,
     ensureVaultFolder,
+    moveVaultFile,
     sanitizeFileName,
     sanitizeTopicFolder,
     buildIndexMarkdown,
     parseFrontmatter,
-    extractFullTextSection,
+    extractMarkdownSection,
     listLibraryCatalog,
     listFilesRecursive
 } from '../pdf-service';
@@ -22,7 +23,10 @@ async function upsertIndexNote(
         author?: string;
         source_type?: string;
         tags?: string[];
+        abstract?: string;
+        section_titles?: string[];
         summary?: string;
+        conclusions?: string;
         content?: string;
         file_path?: string;
     }
@@ -34,22 +38,32 @@ async function upsertIndexNote(
     const indexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
 
     let existingFm: Record<string, any> = {};
-    let existingFullText = '';
+    let existingAbstract = '';
+    let existingSections: string[] = [];
+    let existingSummary = '';
+    let existingConclusions = '';
 
     if (await app.vault.adapter.exists(indexPath)) {
         const existingMd = await app.vault.adapter.read(indexPath);
         existingFm = parseFrontmatter(existingMd);
-        existingFullText = extractFullTextSection(existingMd);
+        existingAbstract = extractMarkdownSection(existingMd, 'Abstract');
+        existingSummary = extractMarkdownSection(existingMd, 'Summary & Key Takeaways');
+        existingConclusions = extractMarkdownSection(existingMd, 'Conclusions');
+        const rawSec = extractMarkdownSection(existingMd, 'Section Titles');
+        if (rawSec && !rawSec.includes('No numbered sections detected')) {
+            existingSections = rawSec
+                .split('\n')
+                .map(l => l.replace(/^\s*-\s*/, '').trim())
+                .filter(Boolean);
+        }
     }
 
     const topicFolder = args.topic_folder
         ? sanitizeTopicFolder(args.topic_folder)
         : (existingFm.topic_folder || (args.subject ? sanitizeTopicFolder(args.subject) : 'Uncategorized'));
 
-    // Move raw file in DyResearch/Library into the topic subfolder if requested
     let currentFilePath: string = args.file_path || existingFm.file_path || '';
     if (!currentFilePath) {
-        // Look for matching file in DyResearch/Library
         const allRaw = await listFilesRecursive(app, LIBRARY_DIR);
         const match = allRaw.find(p => {
             const base = (p.split('/').pop() || '').replace(/\.[^.]+$/, '');
@@ -64,9 +78,7 @@ async function upsertIndexNote(
         await ensureVaultFolder(app, targetFolder);
         const newFilePath = `${targetFolder}/${fileName}`;
         if (newFilePath !== currentFilePath) {
-            const bin = await app.vault.adapter.readBinary(currentFilePath);
-            await app.vault.adapter.writeBinary(newFilePath, bin);
-            await app.vault.adapter.remove(currentFilePath);
+            await moveVaultFile(app, currentFilePath, newFilePath);
             currentFilePath = newFilePath;
         }
     }
@@ -87,8 +99,12 @@ async function upsertIndexNote(
         subject.replace(/\s+/g, '-')
     ].filter(Boolean)));
 
-    const summaryText = args.summary || args.content || '*(Indexed in DyResearch Library)*';
-    const fullText = existingFullText || args.content || summaryText;
+    const abstractText = args.abstract || existingAbstract;
+    const sectionTitles = (args.section_titles && args.section_titles.length > 0)
+        ? args.section_titles
+        : existingSections;
+    const summaryText = args.summary || args.content || existingSummary;
+    const conclusionsText = args.conclusions || existingConclusions;
 
     const md = buildIndexMarkdown({
         title: args.title || existingFm.title || safeBase.replace(/_/g, ' '),
@@ -100,8 +116,10 @@ async function upsertIndexNote(
         pages,
         sourceUrl,
         filePath: currentFilePath,
+        abstractText,
+        sectionTitles,
         summary: summaryText,
-        extractedText: fullText
+        conclusionsText
     });
 
     await app.vault.adapter.write(indexPath, md);
@@ -112,11 +130,11 @@ export function getLibrarianTools(app: App) {
     return [
         new FunctionTool({
             name: 'organize_and_index_document',
-            description: 'Organizes a downloaded/uploaded PDF or document into a topic-specific subfolder in DyResearch/Library/<Topic>/ (e.g. "Machine Learning", "Game Theory") and updates its indexed Markdown note in DyResearch/Library Index/ with structured summary, metadata, and tags while preserving the full extracted PDF text.',
+            description: 'Organizes a downloaded/uploaded PDF or document into a topic-specific subfolder in DyResearch/Library/<Topic>/ and writes its concise index note in DyResearch/Library Index/ (containing ONLY metadata, abstract, summary, section titles, conclusions, and tags—never raw full text).',
             parameters: {
                 type: 'OBJECT' as any,
                 properties: {
-                    title: { type: 'STRING' as any, description: 'Document title (matches the downloaded document title).' },
+                    title: { type: 'STRING' as any, description: 'Document title.' },
                     topic_folder: { type: 'STRING' as any, description: 'Topic subfolder name inside Library (e.g., "Machine Learning", "Game Theory").' },
                     subject: { type: 'STRING' as any, description: 'Lowercase subject category (e.g., "machine learning").' },
                     author: { type: 'STRING' as any, description: 'Author name(s).' },
@@ -125,7 +143,14 @@ export function getLibrarianTools(app: App) {
                         items: { type: 'STRING' as any },
                         description: 'List of relevant tags (e.g. ["transformers", "attention", "nlp"]).'
                     },
-                    summary: { type: 'STRING' as any, description: 'Comprehensive Markdown summary of the document (key contributions, formulas, methodology, results).' },
+                    abstract: { type: 'STRING' as any, description: 'The paper abstract.' },
+                    section_titles: {
+                        type: 'ARRAY' as any,
+                        items: { type: 'STRING' as any },
+                        description: 'List of section titles in the document (e.g. ["1 Introduction", "2 Background", "3 Model Architecture"]).'
+                    },
+                    summary: { type: 'STRING' as any, description: 'Concise structured summary of the document (key contributions and takeaways).' },
+                    conclusions: { type: 'STRING' as any, description: 'Conclusions and future work of the document.' },
                     file_path: { type: 'STRING' as any, description: 'Optional current path to the raw PDF in DyResearch/Library/.' }
                 },
                 required: ['title', 'topic_folder', 'summary']
@@ -137,15 +162,18 @@ export function getLibrarianTools(app: App) {
                     subject: args.subject || args.topic_folder?.toLowerCase(),
                     author: args.author,
                     tags: args.tags,
+                    abstract: args.abstract,
+                    section_titles: args.section_titles,
                     summary: args.summary,
+                    conclusions: args.conclusions,
                     file_path: args.file_path
                 });
-                return `Organized raw file at "${res.filePath || 'N/A'}" and indexed note at "${res.indexPath}" (preserving full extracted text).`;
+                return `Organized raw file at "${res.filePath || 'N/A'}" and saved clean index card at "${res.indexPath}".`;
             }
         }),
         new FunctionTool({
             name: 'ingest_source_chunks',
-            description: 'Ingests text chunks and metadata into DyResearch/Library Index/ (and organizes any matching PDF in DyResearch/Library/).',
+            description: 'Ingests summary and metadata into DyResearch/Library Index/ (and organizes any matching PDF in DyResearch/Library/).',
             parameters: {
                 type: 'OBJECT' as any,
                 properties: {
@@ -154,7 +182,7 @@ export function getLibrarianTools(app: App) {
                     topic_folder: { type: 'STRING' as any, description: 'Optional topic subfolder in DyResearch/Library (e.g. "Machine Learning").' },
                     author: { type: 'STRING' as any, description: 'Author name.' },
                     source_type: { type: 'STRING' as any, description: 'Source type (PDF, Book, Web, Article).' },
-                    content: { type: 'STRING' as any, description: 'Summary or text content to ingest.' }
+                    content: { type: 'STRING' as any, description: 'Summary content to index.' }
                 },
                 required: ['title', 'subject']
             },
@@ -167,12 +195,12 @@ export function getLibrarianTools(app: App) {
                     source_type: args.source_type,
                     content: args.chunks?.join('\n\n') || args.content
                 });
-                return `Chunks indexed into ${res.indexPath}` + (res.filePath ? ` (linked to ${res.filePath})` : '');
+                return `Indexed into ${res.indexPath}` + (res.filePath ? ` (linked to ${res.filePath})` : '');
             }
         }),
         new FunctionTool({
             name: 'ingest_source_file',
-            description: 'Ingests a document summary and metadata into DyResearch/Library Index/ while preserving any full extracted PDF text.',
+            description: 'Ingests a document summary and metadata into DyResearch/Library Index/.',
             parameters: {
                 type: 'OBJECT' as any,
                 properties: {
@@ -181,7 +209,7 @@ export function getLibrarianTools(app: App) {
                     topic_folder: { type: 'STRING' as any, description: 'Optional topic subfolder in DyResearch/Library (e.g. "Machine Learning").' },
                     author: { type: 'STRING' as any, description: 'Author name.' },
                     source_type: { type: 'STRING' as any, description: 'Source type (PDF, Book, Web, Article).' },
-                    content: { type: 'STRING' as any, description: 'Structured summary or text content.' }
+                    content: { type: 'STRING' as any, description: 'Structured summary content.' }
                 },
                 required: ['title', 'subject', 'content']
             },

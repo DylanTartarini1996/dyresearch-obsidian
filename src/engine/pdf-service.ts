@@ -1,14 +1,7 @@
-import { App } from 'obsidian';
-import { PDFParse } from 'pdf-parse';
-import * as pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs';
+import { App, loadPdfJs } from 'obsidian';
 
 export const LIBRARY_DIR = 'DyResearch/Library';
 export const LIBRARY_INDEX_DIR = 'DyResearch/Library Index';
-
-// Ensure in-process worker is registered for Electron renderer environment in Obsidian
-if (typeof globalThis !== 'undefined' && !(globalThis as any).pdfjsWorker) {
-    (globalThis as any).pdfjsWorker = pdfjsWorker;
-}
 
 export async function ensureVaultFolder(app: App, folderPath: string) {
     const parts = folderPath.split('/').filter(Boolean);
@@ -17,9 +10,55 @@ export async function ensureVaultFolder(app: App, folderPath: string) {
         current = current ? `${current}/${part}` : part;
         const exists = await app.vault.adapter.exists(current);
         if (!exists) {
-            await app.vault.adapter.mkdir(current);
+            if (typeof (app.vault as any).createFolder === 'function') {
+                try {
+                    await (app.vault as any).createFolder(current);
+                } catch {
+                    await app.vault.adapter.mkdir(current);
+                }
+            } else {
+                await app.vault.adapter.mkdir(current);
+            }
         }
     }
+}
+
+export async function writeVaultBinary(app: App, filePath: string, buffer: ArrayBuffer) {
+    const copy = buffer.slice(0);
+    if (typeof (app.vault as any).getAbstractFileByPath === 'function') {
+        const existing = (app.vault as any).getAbstractFileByPath(filePath);
+        if (existing && typeof (app.vault as any).modifyBinary === 'function') {
+            await (app.vault as any).modifyBinary(existing, copy);
+            return;
+        }
+        if (!existing && typeof (app.vault as any).createBinary === 'function') {
+            try {
+                await (app.vault as any).createBinary(filePath, copy);
+                return;
+            } catch {
+                // Fall back to adapter if file exists on disk but not yet in cache
+            }
+        }
+    }
+    await app.vault.adapter.writeBinary(filePath, copy);
+}
+
+export async function moveVaultFile(app: App, oldPath: string, newPath: string) {
+    if (oldPath === newPath) return;
+    if (typeof (app.vault as any).getAbstractFileByPath === 'function' && typeof (app.vault as any).rename === 'function') {
+        const existing = (app.vault as any).getAbstractFileByPath(oldPath);
+        if (existing) {
+            try {
+                await (app.vault as any).rename(existing, newPath);
+                return;
+            } catch {
+                // Fall back to adapter copy + remove
+            }
+        }
+    }
+    const bin = await app.vault.adapter.readBinary(oldPath);
+    await writeVaultBinary(app, newPath, bin);
+    await app.vault.adapter.remove(oldPath);
 }
 
 export function sanitizeFileName(name: string): string {
@@ -42,38 +81,128 @@ export interface ExtractedPdfData {
     totalPages: number;
     infoTitle?: string;
     infoAuthor?: string;
+    abstractText: string;
+    sectionTitles: string[];
+    conclusionsText: string;
+}
+
+/**
+ * Extracts structured academic sections (Abstract, Section Titles, Conclusions) from raw PDF text.
+ */
+export function parseAcademicStructure(rawText: string): {
+    abstractText: string;
+    sectionTitles: string[];
+    conclusionsText: string;
+} {
+    const cleanText = rawText.replace(/\r\n/g, '\n');
+
+    // 1. Extract Abstract
+    let abstractText = '';
+    const absMatch = cleanText.match(/(?:^|\n)\s*Abstract\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:1\.?\s+Introduction|I\.?\s+Introduction|Keywords|Index Terms|-- 1 of|\n\n\d+\s+[A-Z]))/i);
+    if (absMatch) {
+        abstractText = absMatch[1]
+            .split('\n')
+            .filter(line => !/^[∗†‡]\s*(Equal contribution|Work performed)/i.test(line.trim()))
+            .filter(line => !/Conference on Neural Information Processing|arXiv:/i.test(line.trim()))
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    // 2. Extract numbered section and subsection titles (e.g., "1 Introduction", "3.2.1 Scaled Dot-Product Attention")
+    const sectionTitles: string[] = [];
+    const seenSections = new Set<string>();
+    const lines = cleanText.split('\n');
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (line.length < 4 || line.length > 85) continue;
+        const secMatch = line.match(/^(\d+(?:\.\d+){0,2})\.?\s+([A-Z][A-Za-z0-9\s\-:,()]+)$/);
+        if (secMatch) {
+            const num = secMatch[1];
+            const topNum = parseInt(num.split('.')[0], 10);
+            if (topNum >= 1 && topNum <= 20) {
+                const heading = `${num} ${secMatch[2].trim()}`;
+                const norm = heading.toLowerCase();
+                if (!seenSections.has(norm)) {
+                    seenSections.add(norm);
+                    sectionTitles.push(heading);
+                }
+            }
+        }
+    }
+
+    // 3. Extract Conclusions
+    let conclusionsText = '';
+    const concMatch = cleanText.match(/(?:^|\n)\s*(?:\d+\.?\s+)?Conclusions?(?:\s+and\s+Future\s+Work)?\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:Acknowledgements?|Acknowledgments?|References|Bibliography|Appendix|-- \d+ of))/i);
+    if (concMatch) {
+        conclusionsText = concMatch[1]
+            .replace(/\n-- \d+ of \d+ --\n/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    return {
+        abstractText,
+        sectionTitles,
+        conclusionsText
+    };
 }
 
 export async function extractPdfTextAndInfo(buffer: ArrayBuffer): Promise<ExtractedPdfData> {
-    if (typeof globalThis !== 'undefined' && !(globalThis as any).pdfjsWorker) {
-        (globalThis as any).pdfjsWorker = pdfjsWorker;
-    }
+    const pdfjsLib = await loadPdfJs();
+    const loadingTask = pdfjsLib.getDocument(buffer.slice(0));
+    const doc = await loadingTask.promise;
 
-    const parser = new PDFParse({ data: new Uint8Array(buffer) });
     try {
         let infoTitle: string | undefined;
         let infoAuthor: string | undefined;
         try {
-            const infoRes = await parser.getInfo();
-            if (infoRes?.info?.Title && typeof infoRes.info.Title === 'string') {
-                infoTitle = infoRes.info.Title.trim();
+            const meta = await doc.getMetadata();
+            if (meta?.info?.Title && typeof meta.info.Title === 'string') {
+                infoTitle = meta.info.Title.trim();
             }
-            if (infoRes?.info?.Author && typeof infoRes.info.Author === 'string') {
-                infoAuthor = infoRes.info.Author.trim();
+            if (meta?.info?.Author && typeof meta.info.Author === 'string') {
+                infoAuthor = meta.info.Author.trim();
             }
         } catch {
             // Ignore metadata errors if PDF only has raw pages
         }
 
-        const textRes = await parser.getText();
+        const totalPages = doc.numPages || 0;
+        const pageTexts: string[] = [];
+
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+            const page = await doc.getPage(pageNum);
+            const textContent = await page.getTextContent();
+            const items = textContent?.items || [];
+            let pageStr = '';
+            for (const item of items) {
+                if ('str' in item) {
+                    pageStr += item.str + (item.hasEOL ? '\n' : ' ');
+                }
+            }
+            pageTexts.push(`${pageStr.trim()}\n-- ${pageNum} of ${totalPages} --`);
+            if (typeof page.cleanup === 'function') {
+                page.cleanup();
+            }
+        }
+
+        const fullText = pageTexts.join('\n\n').trim();
+        const structure = parseAcademicStructure(fullText);
+
         return {
-            text: (textRes?.text || '').trim(),
-            totalPages: textRes?.total || 0,
+            text: fullText,
+            totalPages,
             infoTitle,
-            infoAuthor
+            infoAuthor,
+            abstractText: structure.abstractText,
+            sectionTitles: structure.sectionTitles,
+            conclusionsText: structure.conclusionsText
         };
     } finally {
-        await parser.destroy();
+        if (typeof doc.destroy === 'function') {
+            await doc.destroy();
+        }
     }
 }
 
@@ -98,6 +227,9 @@ export interface SaveAndIndexResult {
     topicFolder: string;
     totalPages: number;
     totalChars: number;
+    abstractText: string;
+    sectionTitles: string[];
+    conclusionsText: string;
     textPreview: string;
 }
 
@@ -116,11 +248,17 @@ export async function saveAndIndexDocument(
     let totalPages = 1;
     let detectedTitle = options.title?.trim() || '';
     let detectedAuthors = options.authors?.trim() || '';
+    let abstractText = '';
+    let sectionTitles: string[] = [];
+    let conclusionsText = '';
 
     if (ext === 'pdf') {
-        const pdfData = await extractPdfTextAndInfo(options.buffer);
+        const pdfData = await extractPdfTextAndInfo(options.buffer.slice(0));
         extractedText = pdfData.text;
         totalPages = pdfData.totalPages;
+        abstractText = pdfData.abstractText;
+        sectionTitles = pdfData.sectionTitles;
+        conclusionsText = pdfData.conclusionsText;
         if (!detectedTitle && pdfData.infoTitle && pdfData.infoTitle.length > 2) {
             detectedTitle = pdfData.infoTitle;
         }
@@ -128,7 +266,11 @@ export async function saveAndIndexDocument(
             detectedAuthors = pdfData.infoAuthor;
         }
     } else if (ext === 'md' || ext === 'txt') {
-        extractedText = new TextDecoder('utf-8').decode(options.buffer);
+        extractedText = new TextDecoder('utf-8').decode(options.buffer.slice(0));
+        const structure = parseAcademicStructure(extractedText);
+        abstractText = structure.abstractText;
+        sectionTitles = structure.sectionTitles;
+        conclusionsText = structure.conclusionsText;
     }
 
     const finalTitle = detectedTitle || rawBaseName.replace(/_/g, ' ') || 'Untitled Document';
@@ -141,7 +283,7 @@ export async function saveAndIndexDocument(
     await ensureVaultFolder(app, targetFolder);
 
     const filePath = `${targetFolder}/${safeBase}.${ext}`;
-    await app.vault.adapter.writeBinary(filePath, options.buffer);
+    await writeVaultBinary(app, filePath, options.buffer);
 
     const defaultTags = [
         subject.replace(/\s+/g, '-').replace(/[^a-z0-9-_]/gi, ''),
@@ -160,8 +302,10 @@ export async function saveAndIndexDocument(
         pages: totalPages,
         sourceUrl: options.sourceUrl || '',
         filePath,
-        summary: options.summary || '*(Full text extracted automatically. Librarian can enrich this summary.)*',
-        extractedText: extractedText || '*(No extractable text found in binary file.)*'
+        abstractText,
+        sectionTitles,
+        summary: options.summary || '',
+        conclusionsText
     });
 
     await app.vault.adapter.write(indexPath, indexMarkdown);
@@ -175,6 +319,9 @@ export async function saveAndIndexDocument(
         topicFolder: topicFolder || 'Uncategorized',
         totalPages,
         totalChars: extractedText.length,
+        abstractText,
+        sectionTitles,
+        conclusionsText,
         textPreview: extractedText.substring(0, 6000)
     };
 }
@@ -189,16 +336,26 @@ export interface IndexMarkdownFields {
     pages: number;
     sourceUrl: string;
     filePath: string;
-    summary: string;
-    extractedText: string;
+    abstractText?: string;
+    sectionTitles?: string[];
+    summary?: string;
+    conclusionsText?: string;
 }
 
+/**
+ * Builds a clean, concise Library Index card (Metadata, Abstract, Section Titles, Summary, Conclusions, Tags)
+ * without dumping raw pages of text.
+ */
 export function buildIndexMarkdown(fields: IndexMarkdownFields): string {
     const tagLines = fields.tags.length > 0
         ? fields.tags.map(t => `  - ${t.replace(/^#/, '').trim()}`).join('\n')
         : '  - research';
 
-    return [
+    const sectionsList = fields.sectionTitles && fields.sectionTitles.length > 0
+        ? fields.sectionTitles.map(s => `- ${s}`).join('\n')
+        : '- *(No numbered sections detected)*';
+
+    const blocks: string[] = [
         '---',
         `title: "${fields.title.replace(/"/g, '\\"')}"`,
         `authors: "${fields.authors.replace(/"/g, '\\"')}"`,
@@ -221,13 +378,24 @@ export function buildIndexMarkdown(fields: IndexMarkdownFields): string {
         `- **Authors**: ${fields.authors}`,
         `- **Pages**: ${fields.pages}`,
         fields.sourceUrl ? `- **Source URL**: ${fields.sourceUrl}` : '',
-        '',
-        '## Summary & Key Takeaways',
-        fields.summary.trim(),
-        '',
-        '## Extracted Full Text',
-        fields.extractedText.trim()
-    ].filter(line => line !== undefined).join('\n');
+        ''
+    ];
+
+    if (fields.abstractText && fields.abstractText.trim()) {
+        blocks.push('## Abstract', fields.abstractText.trim(), '');
+    }
+
+    if (fields.summary && fields.summary.trim()) {
+        blocks.push('## Summary & Key Takeaways', fields.summary.trim(), '');
+    }
+
+    blocks.push('## Section Titles', sectionsList, '');
+
+    if (fields.conclusionsText && fields.conclusionsText.trim()) {
+        blocks.push('## Conclusions', fields.conclusionsText.trim(), '');
+    }
+
+    return blocks.filter(line => line !== undefined).join('\n').trim() + '\n';
 }
 
 export function parseFrontmatter(mdContent: string): Record<string, any> {
@@ -260,11 +428,11 @@ export function parseFrontmatter(mdContent: string): Record<string, any> {
     return result;
 }
 
-export function extractFullTextSection(mdContent: string): string {
-    const marker = '## Extracted Full Text';
-    const idx = mdContent.indexOf(marker);
-    if (idx === -1) return '';
-    return mdContent.slice(idx + marker.length).trim();
+export function extractMarkdownSection(mdContent: string, heading: string): string {
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, 'i');
+    const m = mdContent.match(regex);
+    return m ? m[1].trim() : '';
 }
 
 export async function listFilesRecursive(app: App, folderPath: string): Promise<string[]> {
@@ -297,7 +465,6 @@ export async function listLibraryCatalog(app: App): Promise<LibraryDocumentEntry
 
     const entriesMap = new Map<string, LibraryDocumentEntry>();
 
-    // 1. Read indexed markdown notes in DyResearch/Library Index
     const indexFiles = await listFilesRecursive(app, LIBRARY_INDEX_DIR);
     for (const idxPath of indexFiles) {
         if (!idxPath.endsWith('.md')) continue;
@@ -322,7 +489,6 @@ export async function listLibraryCatalog(app: App): Promise<LibraryDocumentEntry
         }
     }
 
-    // 2. Also discover any raw files in DyResearch/Library that might not have an index entry yet
     const rawFiles = await listFilesRecursive(app, LIBRARY_DIR);
     for (const rawPath of rawFiles) {
         const fileName = rawPath.split('/').pop() || '';
@@ -330,7 +496,6 @@ export async function listLibraryCatalog(app: App): Promise<LibraryDocumentEntry
         const baseName = fileName.replace(/\.[^.]+$/, '');
         const key = baseName.toLowerCase();
 
-        // Determine topic subfolder relative to DyResearch/Library
         const rel = rawPath.slice(LIBRARY_DIR.length + 1);
         const relParts = rel.split('/');
         const topicFolder = relParts.length > 1 ? relParts.slice(0, -1).join('/') : 'Uncategorized';
@@ -359,4 +524,3 @@ export async function listLibraryCatalog(app: App): Promise<LibraryDocumentEntry
 
     return Array.from(entriesMap.values());
 }
-

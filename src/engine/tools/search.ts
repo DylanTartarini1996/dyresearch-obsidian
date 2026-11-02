@@ -104,14 +104,16 @@ export function getResearchTools(app: App) {
 
                     return JSON.stringify({
                         status: 'success',
-                        message: `Successfully downloaded PDF (${saved.totalPages} pages, ${saved.totalChars} characters) and indexed full text.`,
+                        message: `Successfully downloaded PDF (${saved.totalPages} pages) to ${saved.filePath} and created concise Library Index card at ${saved.indexPath}.`,
                         file_path: saved.filePath,
                         index_path: saved.indexPath,
                         title: saved.title,
                         authors: saved.authors,
                         topic_folder: saved.topicFolder,
                         total_pages: saved.totalPages,
-                        total_characters: saved.totalChars,
+                        abstract: saved.abstractText,
+                        section_titles: saved.sectionTitles,
+                        conclusions: saved.conclusionsText,
                         extracted_text_preview: saved.textPreview
                     }, null, 2);
                 } catch (e: any) {

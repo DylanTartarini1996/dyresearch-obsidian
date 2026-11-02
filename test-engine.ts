@@ -16,7 +16,11 @@ const mockApp = {
             exists: async (p: string) => dirs.has(p) || files.has(p) || binaryFiles.has(p),
             mkdir: async (p: string) => { dirs.add(p); },
             write: async (p: string, c: string) => { files.set(p, c); },
-            writeBinary: async (p: string, b: ArrayBuffer) => { binaryFiles.set(p, b); },
+            writeBinary: async (p: string, b: ArrayBuffer) => {
+                // Mirror Obsidian's native writeBinary which constructs a Uint8Array from the ArrayBuffer
+                const view = new Uint8Array(b);
+                binaryFiles.set(p, view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
+            },
             read: async (p: string) => files.get(p) || '',
             readBinary: async (p: string) => binaryFiles.get(p) || new ArrayBuffer(0),
             remove: async (p: string) => { files.delete(p); binaryFiles.delete(p); },
@@ -88,9 +92,9 @@ const mockPlugin = {
     assert.strictEqual(saved.indexPath, 'DyResearch/Library Index/Attention_Is_All_You_Need.md');
     assert.ok(binaryFiles.has('DyResearch/Library/Attention_Is_All_You_Need.pdf'));
     assert.ok(files.has('DyResearch/Library Index/Attention_Is_All_You_Need.md'));
-    assert.ok(files.get('DyResearch/Library Index/Attention_Is_All_You_Need.md')!.includes('Scaled Dot-Product Attention Formula'));
+    assert.ok(!files.get('DyResearch/Library Index/Attention_Is_All_You_Need.md')!.includes('## Extracted Full Text'));
 
-    // Test Librarian organizing PDF into "Machine Learning" subfolder & enriching summary while preserving full text
+    // Test Librarian organizing PDF into "Machine Learning" subfolder & writing clean index card
     const libTools = getLibrarianTools(mockApp);
     const organizeTool = libTools.find(t => t.name === 'organize_and_index_document')!;
     await (organizeTool as any).execute({
@@ -99,20 +103,26 @@ const mockPlugin = {
         subject: 'machine learning',
         author: 'Ashish Vaswani et al.',
         tags: ['transformers', 'attention'],
-        summary: 'Introduces the Transformer architecture based solely on attention mechanisms.'
+        abstract: 'We propose a new simple network architecture, the Transformer.',
+        section_titles: ['1 Introduction', '2 Background', '3 Model Architecture'],
+        summary: 'Introduces the Transformer architecture based solely on attention mechanisms.',
+        conclusions: 'The Transformer achieves state-of-the-art translation performance.'
     });
 
     assert.ok(binaryFiles.has('DyResearch/Library/Machine Learning/Attention_Is_All_You_Need.pdf'));
     assert.ok(!binaryFiles.has('DyResearch/Library/Attention_Is_All_You_Need.pdf'));
     const updatedIndexMd = files.get('DyResearch/Library Index/Attention_Is_All_You_Need.md')!;
     assert.ok(updatedIndexMd.includes('Introduces the Transformer architecture'));
-    assert.ok(updatedIndexMd.includes('Scaled Dot-Product Attention Formula'));
+    assert.ok(updatedIndexMd.includes('## Abstract'));
+    assert.ok(updatedIndexMd.includes('## Section Titles'));
+    assert.ok(updatedIndexMd.includes('## Conclusions'));
+    assert.ok(!updatedIndexMd.includes('## Extracted Full Text'));
 
-    // Test Professor searching and reading the indexed PDF
+    // Test Professor searching index and reading specific passage from the linked PDF on the fly
     const profTools = getTeachingTools(mockApp);
     const searchKbTool = profTools.find(t => t.name === 'search_knowledge_base')!;
     const searchRes = await (searchKbTool as any).execute({
-        query: 'Scaled Dot-Product Attention',
+        query: 'Transformer',
         subject_filter: 'machine learning'
     });
     assert.ok(searchRes.includes('Attention_Is_All_You_Need.md'));
