@@ -12,6 +12,7 @@ export interface ApiKeys {
 export interface DyResearchSettings {
     chatWidth: string;
     chatHeight: string;
+    chatDisplayMode: 'docked' | 'floating';
     apiKeys: ApiKeys;
     agents: {
         coordinator: AgentModelConfig;
@@ -25,6 +26,7 @@ export interface DyResearchSettings {
 export const DEFAULT_SETTINGS: DyResearchSettings = {
     chatWidth: '650px',
     chatHeight: '80vh',
+    chatDisplayMode: 'docked',
     apiKeys: {
         gemini: '',
         openai: '',

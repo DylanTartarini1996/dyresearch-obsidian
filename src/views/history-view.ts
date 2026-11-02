@@ -1,44 +1,78 @@
 import { ItemView, WorkspaceLeaf, setIcon, Notice } from 'obsidian';
 import type DyResearchPlugin from '../main';
+import { renderChatInterface } from '../modals/chat-modal';
 
 export const VIEW_TYPE_HISTORY = "dyresearch-history-view";
 
 export class HistoryView extends ItemView {
-    private activeTab: 'chats' | 'library' = 'chats';
+    private activeTab: 'chat' | 'chats' | 'library' = 'chat';
     private searchQuery = "";
-    private isFuzzySearch = false;
 
     constructor(leaf: WorkspaceLeaf, private plugin: DyResearchPlugin) {
         super(leaf);
     }
 
     getViewType() { return VIEW_TYPE_HISTORY; }
-    getDisplayText() { return "DyResearch History"; }
+    getDisplayText() { return "DyResearch"; }
+    getIcon() { return "bot"; }
 
-    async onOpen() {
+    public getActiveTab() {
+        return this.activeTab;
+    }
+
+    public setActiveTab(tab: 'chat' | 'chats' | 'library') {
+        this.activeTab = tab;
         this.refreshView();
     }
 
+    async onOpen() {
+        if (this.plugin.activeChatModal) {
+            this.activeTab = 'chats';
+        }
+        await this.refreshView();
+    }
+
     async refreshView() {
-        const container = this.containerEl.children[1];
+        const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
+        container.addClass('dy-history-container');
 
         const navContainer = container.createDiv({ cls: 'dy-nav-tabs' });
-        
-        const chatsTab = navContainer.createEl('button', { text: '💬 Chats', cls: 'dy-tab-btn' });
+
+        const chatTab = navContainer.createEl('button', { text: '💬 Chat', cls: 'dy-tab-btn' });
+        const chatsTab = navContainer.createEl('button', { text: '🕓 Sessions', cls: 'dy-tab-btn' });
         const libTab = navContainer.createEl('button', { text: '📚 Library', cls: 'dy-tab-btn' });
 
+        if (this.activeTab === 'chat') chatTab.addClass('is-active-tab');
         if (this.activeTab === 'chats') chatsTab.addClass('is-active-tab');
         if (this.activeTab === 'library') libTab.addClass('is-active-tab');
 
+        chatTab.onClickEvent(async () => {
+            if (this.plugin.activeChatModal) {
+                this.plugin.activeChatModal.close();
+            }
+            this.plugin.settings.chatDisplayMode = 'docked';
+            await this.plugin.saveData(this.plugin.settings);
+            this.activeTab = 'chat';
+            await this.refreshView();
+        });
         chatsTab.onClickEvent(() => { this.activeTab = 'chats'; this.refreshView(); });
         libTab.onClickEvent(() => { this.activeTab = 'library'; this.refreshView(); });
-        
-        if (this.activeTab === 'chats') {
+
+        if (this.activeTab === 'chat') {
+            await this.renderActiveChatTab(container);
+        } else if (this.activeTab === 'chats') {
             await this.renderChatsTab(container);
         } else {
             await this.renderLibraryTab(container);
         }
+    }
+
+    async renderActiveChatTab(container: HTMLElement) {
+        const chatWrapper = container.createDiv({ cls: 'chat-main-body-wrapper dy-docked-chat-wrapper' });
+        await renderChatInterface(chatWrapper, this.app, this.plugin, this.plugin.currentSessionId, {
+            isDocked: true
+        });
     }
 
     async renderChatsTab(container: HTMLElement) {
@@ -46,16 +80,13 @@ export class HistoryView extends ItemView {
         header.createEl("h4", { text: "Research Sessions" });
 
         const buttonContainer = header.createDiv({ cls: 'history-buttons' });
-        const newChatBtn = buttonContainer.createEl("button", { cls: 'dy-new-chat-btn' });
+        const newChatBtn = buttonContainer.createEl("button", {
+            cls: 'dy-new-chat-btn',
+            attr: { 'aria-label': 'New chat session' }
+        });
         setIcon(newChatBtn, 'plus');
         newChatBtn.onClickEvent(async () => {
-            this.plugin.currentSessionId = `obsidian_${Date.now()}`;
-            await this.plugin.engine.ensureSession(this.plugin.currentSessionId);
-            this.plugin.openOrCreateChat();
-            if (this.plugin.activeChatModal) {
-                await this.plugin.activeChatModal.switchSession(this.plugin.currentSessionId);
-            }
-            await this.refreshView();
+            await this.plugin.startNewSession();
         });
 
         const searchContainer = container.createDiv({ cls: 'history-search-container' });
@@ -89,10 +120,15 @@ export class HistoryView extends ItemView {
             try {
                 const response = await this.plugin.engine.getSessions();
                 loadingText.remove();
-                
+
                 let sessions = response.sessions;
                 if (this.searchQuery) {
                     sessions = sessions.filter(s => s.sessionId.toLowerCase().includes(this.searchQuery.toLowerCase()));
+                }
+
+                if (sessions.length === 0) {
+                    list.createEl("p", { text: "No sessions found.", cls: "dy-empty-list-text" });
+                    return;
                 }
 
                 sessions.forEach((item) => {
@@ -101,30 +137,43 @@ export class HistoryView extends ItemView {
 
                     const titleContainer = sessionEl.createDiv({ cls: "session-title-container" });
                     const nameEl = titleContainer.createEl("div", { text: item.sessionId, cls: "session-name" });
-                    
-                    const editBtn = titleContainer.createEl("button", { cls: "dy-edit-btn" });
+
+                    const actionsGroup = titleContainer.createDiv({ cls: "session-item-actions" });
+                    const editBtn = actionsGroup.createEl("button", {
+                        cls: "dy-edit-btn",
+                        attr: { 'aria-label': 'Rename session' }
+                    });
                     setIcon(editBtn, 'pencil');
 
-                    const deleteBtn = titleContainer.createEl("button", { cls: "dy-delete-btn" });
+                    const deleteBtn = actionsGroup.createEl("button", {
+                        cls: "dy-delete-btn",
+                        attr: { 'aria-label': 'Delete session' }
+                    });
                     setIcon(deleteBtn, 'trash');
-                    
-                    const date = new Date(item.updatedAt!).toLocaleDateString();
-                    sessionEl.createEl("small", { text: `Last activity: ${date}` });
 
-                    sessionEl.onClickEvent((e) => {
+                    const date = new Date(item.updatedAt!).toLocaleDateString();
+                    sessionEl.createEl("small", { text: `Last activity: ${date}`, cls: "session-date" });
+
+                    sessionEl.onClickEvent(async (e) => {
                         if ((e.target as HTMLElement).tagName === 'INPUT') return;
                         this.plugin.currentSessionId = item.sessionId;
-                        this.plugin.openOrCreateChat();
                         if (this.plugin.activeChatModal) {
-                            this.plugin.activeChatModal.switchSession(item.sessionId);
+                            await this.plugin.activeChatModal.switchSession(item.sessionId);
+                            await this.refreshView();
+                        } else {
+                            this.activeTab = 'chat';
+                            await this.refreshView();
                         }
-                        this.refreshView();
                     });
 
                     editBtn.onClickEvent((e) => {
                         e.stopPropagation();
                         nameEl.empty();
-                        const inputField = nameEl.createEl("input", { type: "text", value: item.sessionId, cls: "session-rename-input" });
+                        const inputField = nameEl.createEl("input", {
+                            type: "text",
+                            value: item.sessionId,
+                            cls: "session-rename-input"
+                        });
                         editBtn.style.display = 'none';
                         inputField.focus();
 
@@ -148,6 +197,9 @@ export class HistoryView extends ItemView {
                                     nameEl.setText(item.sessionId);
                                     editBtn.style.display = 'flex';
                                 }
+                            } else if (keyEvent.key === 'Escape') {
+                                nameEl.setText(item.sessionId);
+                                editBtn.style.display = 'flex';
                             }
                         });
                     });
@@ -156,8 +208,13 @@ export class HistoryView extends ItemView {
                         e.stopPropagation();
                         if (!confirm(`Are you sure you want to delete session "${item.sessionId}"?`)) return;
                         try {
-                            await this.plugin.engine.sessionService.deleteSession({ appName: 'dyresearch', sessionId: item.sessionId });
-                            if (this.plugin.currentSessionId === item.sessionId) this.plugin.currentSessionId = "";
+                            await this.plugin.engine.sessionService.deleteSession({
+                                appName: 'dyresearch',
+                                sessionId: item.sessionId
+                            });
+                            if (this.plugin.currentSessionId === item.sessionId) {
+                                this.plugin.currentSessionId = `obsidian_${Date.now()}`;
+                            }
                             this.refreshView();
                             new Notice("Session deleted.");
                         } catch (err) {
@@ -173,25 +230,28 @@ export class HistoryView extends ItemView {
         await loadChats();
     }
 
-    async renderUploadSection(container: HTMLElement){
+    async renderUploadSection(container: HTMLElement) {
         const uploadContainer = container.createDiv({ cls: 'upload-section' });
         uploadContainer.createEl("h4", { text: "Upload File(s) to Library" });
         const metadataForm = uploadContainer.createDiv({ cls: 'metadata-form' });
 
-        const subjectInput = metadataForm.createEl("input", { type: "text", placeholder: "Subject..." });
+        const subjectInput = metadataForm.createEl("input", { type: "text", placeholder: "Topic folder (e.g. Machine Learning)..." });
         const authorsInput = metadataForm.createEl("input", { type: "text", placeholder: "Authors..." });
-        
+
         const fileInput = uploadContainer.createEl("input", {
             attr: { type: "file", multiple: "true", accept: ".pdf,.md,.docx,.txt" },
             cls: "hidden-file-input"
         });
 
-        const uploadBtn = uploadContainer.createEl("button", { text: "📁 Select & Upload Docs", cls: "dy-upload-btn" });
+        const uploadBtn = uploadContainer.createEl("button", {
+            text: "📁 Select & Upload Docs",
+            cls: "dy-upload-btn"
+        });
         uploadBtn.onClickEvent(() => fileInput.click());
-        
+
         fileInput.addEventListener("change", async () => {
             if (!fileInput.files || fileInput.files.length === 0) return;
-            
+
             uploadBtn.setText("⏳ Processing...");
             uploadBtn.disabled = true;
 
@@ -214,12 +274,12 @@ export class HistoryView extends ItemView {
         });
     }
 
-    async renderLibraryTab(container: HTMLElement){
+    async renderLibraryTab(container: HTMLElement) {
         await this.renderUploadSection(container);
-        container.createEl("hr", { cls: "library-divider" });
 
         const libContainer = container.createDiv({ cls: 'library-container' });
-        libContainer.createEl("h4", { text: "Files in Library" });
+        const libHeader = libContainer.createDiv({ cls: 'history-header' });
+        libHeader.createEl("h4", { text: "Files in Library" });
         const list = libContainer.createDiv({ cls: "library-list" });
 
         const loadDocs = async () => {
@@ -235,21 +295,33 @@ export class HistoryView extends ItemView {
                     titleInfo.createEl("strong", { text: doc.title });
                     titleInfo.createEl("span", { text: doc.type, cls: "badge-type" });
 
-                    const libDeleteBtn = header.createEl("button", { cls: "dy-delete-btn-small" });
+                    const libDeleteBtn = header.createEl("button", {
+                        cls: "dy-delete-btn-small",
+                        attr: { 'aria-label': 'Delete document' }
+                    });
                     setIcon(libDeleteBtn, 'trash');
 
-                    libDeleteBtn.onClickEvent(async () => {
-                        if (!confirm(`Delete "${doc.title}"?`)) return;
+                    libDeleteBtn.onClickEvent(async (e) => {
+                        e.stopPropagation();
+                        if (!confirm(`Delete "${doc.title}" from Library and Library Index?`)) return;
                         await this.plugin.engine.deleteLibraryFile(doc.title);
                         this.refreshView();
                     });
-                    
-                    card.createEl("div", { text: `👤 ${doc.authors}`, cls: "library-meta" });
-                    card.createEl("div", { text: `🏷️ ${doc.subject}`, cls: "library-meta" });
+
+                    card.createEl("div", { text: `📁 ${doc.topicFolder || doc.subject}`, cls: "library-meta" });
+                    card.createEl("div", { text: `👤 ${doc.authors} • 📄 ${doc.pages || 1} p.`, cls: "library-meta" });
+
+                    card.style.cursor = "pointer";
+                    card.onClickEvent(async () => {
+                        const targetPath = doc.indexPath || doc.filePath;
+                        if (targetPath) {
+                            await this.app.workspace.openLinkText(targetPath, '', false);
+                        }
+                    });
                 });
 
                 if (files.length === 0) {
-                    list.createEl("p", { text: "No documents found in Vault.", cls: "text-muted" });
+                    list.createEl("p", { text: "No documents found in Library.", cls: "dy-empty-list-text" });
                 }
             } catch (err) {
                 loadingNotice.setText("❌ Error loading library.");

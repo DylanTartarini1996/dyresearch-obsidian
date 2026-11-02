@@ -1,21 +1,42 @@
 import assert from 'node:assert';
 import { DyResearchEngine } from './src/engine/engine';
+import { saveAndIndexDocument, listLibraryCatalog } from './src/engine/pdf-service';
+import { getLibrarianTools } from './src/engine/tools/library';
+import { getTeachingTools } from './src/engine/tools/teaching';
 
 const files = new Map<string, string>();
+const binaryFiles = new Map<string, ArrayBuffer>();
 const dirs = new Set<string>();
 
 const mockApp = {
     vault: {
+        getMarkdownFiles: () => [...files.keys()].map(p => ({ path: p })),
+        read: async (f: { path: string }) => files.get(f.path) || '',
         adapter: {
-            exists: async (p: string) => dirs.has(p) || files.has(p),
+            exists: async (p: string) => dirs.has(p) || files.has(p) || binaryFiles.has(p),
             mkdir: async (p: string) => { dirs.add(p); },
             write: async (p: string, c: string) => { files.set(p, c); },
+            writeBinary: async (p: string, b: ArrayBuffer) => { binaryFiles.set(p, b); },
             read: async (p: string) => files.get(p) || '',
-            remove: async (p: string) => { files.delete(p); },
-            list: async (p: string) => ({
-                files: [...files.keys()].filter(k => k.startsWith(p + '/')),
-                folders: []
-            })
+            readBinary: async (p: string) => binaryFiles.get(p) || new ArrayBuffer(0),
+            remove: async (p: string) => { files.delete(p); binaryFiles.delete(p); },
+            list: async (p: string) => {
+                const allKeys = [...files.keys(), ...binaryFiles.keys()];
+                const directFiles = allKeys.filter(k => {
+                    if (!k.startsWith(p + '/')) return false;
+                    const rest = k.slice(p.length + 1);
+                    return !rest.includes('/');
+                });
+                const subFolders = [...dirs].filter(d => {
+                    if (!d.startsWith(p + '/')) return false;
+                    const rest = d.slice(p.length + 1);
+                    return rest.length > 0 && !rest.includes('/');
+                });
+                return {
+                    files: directFiles,
+                    folders: subFolders
+                };
+            }
         }
     }
 } as any;
@@ -47,4 +68,64 @@ const mockPlugin = {
     assert.strictEqual(listed.sessions.length, 1);
     assert.strictEqual(listed.sessions[0].id, 'renamed_session');
     console.log("All session markdown checks passed.");
+
+    // Test PDF save + parse + index
+    const minPdf = Buffer.from(
+        "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Contents 4 0 R/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>>>>>endobj\n4 0 obj<</Length 58>>stream\nBT /F1 12 Tf 100 700 Td (Scaled Dot-Product Attention Formula) Tj ET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f \n0000000009 00000 n \n0000000052 00000 n \n0000000101 00000 n \n0000000248 00000 n \ntrailer<</Size 5/Root 1 0 R>>\nstartxref\n356\n%%EOF",
+        "utf-8"
+    );
+    const pdfArrayBuf = minPdf.buffer.slice(minPdf.byteOffset, minPdf.byteOffset + minPdf.byteLength);
+
+    const saved = await saveAndIndexDocument(mockApp, {
+        buffer: pdfArrayBuf,
+        filename: 'Attention_Is_All_You_Need.pdf',
+        title: 'Attention Is All You Need',
+        authors: 'Vaswani et al.',
+        sourceUrl: 'https://arxiv.org/pdf/1706.03762.pdf'
+    });
+
+    assert.strictEqual(saved.filePath, 'DyResearch/Library/Attention_Is_All_You_Need.pdf');
+    assert.strictEqual(saved.indexPath, 'DyResearch/Library Index/Attention_Is_All_You_Need.md');
+    assert.ok(binaryFiles.has('DyResearch/Library/Attention_Is_All_You_Need.pdf'));
+    assert.ok(files.has('DyResearch/Library Index/Attention_Is_All_You_Need.md'));
+    assert.ok(files.get('DyResearch/Library Index/Attention_Is_All_You_Need.md')!.includes('Scaled Dot-Product Attention Formula'));
+
+    // Test Librarian organizing PDF into "Machine Learning" subfolder & enriching summary while preserving full text
+    const libTools = getLibrarianTools(mockApp);
+    const organizeTool = libTools.find(t => t.name === 'organize_and_index_document')!;
+    await (organizeTool as any).execute({
+        title: 'Attention Is All You Need',
+        topic_folder: 'Machine Learning',
+        subject: 'machine learning',
+        author: 'Ashish Vaswani et al.',
+        tags: ['transformers', 'attention'],
+        summary: 'Introduces the Transformer architecture based solely on attention mechanisms.'
+    });
+
+    assert.ok(binaryFiles.has('DyResearch/Library/Machine Learning/Attention_Is_All_You_Need.pdf'));
+    assert.ok(!binaryFiles.has('DyResearch/Library/Attention_Is_All_You_Need.pdf'));
+    const updatedIndexMd = files.get('DyResearch/Library Index/Attention_Is_All_You_Need.md')!;
+    assert.ok(updatedIndexMd.includes('Introduces the Transformer architecture'));
+    assert.ok(updatedIndexMd.includes('Scaled Dot-Product Attention Formula'));
+
+    // Test Professor searching and reading the indexed PDF
+    const profTools = getTeachingTools(mockApp);
+    const searchKbTool = profTools.find(t => t.name === 'search_knowledge_base')!;
+    const searchRes = await (searchKbTool as any).execute({
+        query: 'Scaled Dot-Product Attention',
+        subject_filter: 'machine learning'
+    });
+    assert.ok(searchRes.includes('Attention_Is_All_You_Need.md'));
+
+    const readLibTool = profTools.find(t => t.name === 'read_library_document')!;
+    const readRes = await (readLibTool as any).execute({
+        path_or_title: 'Attention Is All You Need',
+        section_query: 'Scaled Dot-Product'
+    });
+    assert.ok(readRes.includes('Scaled Dot-Product Attention Formula'));
+
+    const catalog = await listLibraryCatalog(mockApp);
+    assert.strictEqual(catalog.length, 1);
+    assert.strictEqual(catalog[0].topicFolder, 'Machine Learning');
+    console.log("All PDF download, Library organization, and Library Index reading checks passed!");
 })();

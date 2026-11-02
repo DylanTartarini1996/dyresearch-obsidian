@@ -6,6 +6,7 @@ import { createLibrarianAgent } from './agents/librarian';
 import { createProfessorAgent } from './agents/professor';
 import { createResearcherAgent } from './agents/researcher';
 import { createNoteTakerAgent } from './agents/notetaker';
+import { saveAndIndexDocument, listLibraryCatalog, sanitizeFileName } from './pdf-service';
 import type DyResearchPlugin from '../main';
 
 export class DyResearchEngine {
@@ -106,50 +107,48 @@ export class DyResearchEngine {
         await this.sessionService.renameSession(oldSessionId, newSessionId);
     }
 
-    public async ingestFile(file: File, metadata: any) {
-        // Enforce max size limit (e.g. 5MB)
-        const MAX_SIZE = 5 * 1024 * 1024;
+    public async ingestFile(file: File, metadata: { subject?: string; authors?: string }) {
+        // Enforce max size limit (e.g. 25MB for research PDFs)
+        const MAX_SIZE = 25 * 1024 * 1024;
         if (file.size > MAX_SIZE) {
-            new Notice(`File ${file.name} exceeds the 5MB limit.`);
+            new Notice(`File ${file.name} exceeds the 25MB limit.`);
             return;
         }
 
-        // Save original file to DyResearch/Library/Originals/
-        const originalsDir = 'DyResearch/Library/Originals';
-        const exists = await this.app.vault.adapter.exists(originalsDir);
-        if (!exists) {
-            // Recursive mkdir basically
-            const libExists = await this.app.vault.adapter.exists('DyResearch/Library');
-            if (!libExists) await this.app.vault.adapter.mkdir('DyResearch/Library');
-            await this.app.vault.adapter.mkdir(originalsDir);
-        }
-
         const buffer = await file.arrayBuffer();
-        const originalPath = `${originalsDir}/${file.name}`;
-        await this.app.vault.adapter.writeBinary(originalPath, buffer);
+        const topicFolder = metadata?.subject?.trim() || '';
+        const saved = await saveAndIndexDocument(this.app, {
+            buffer,
+            filename: file.name,
+            title: file.name.replace(/\.[^.]+$/, '').replace(/_/g, ' '),
+            authors: metadata?.authors?.trim() || undefined,
+            topicFolder: topicFolder || undefined,
+            subject: topicFolder ? topicFolder.toLowerCase() : 'general'
+        });
 
-        // TODO: Pass to Librarian Agent for summarization.
-        // For now, simulate success:
-        new Notice(`File ${file.name} saved to Vault successfully!`);
+        new Notice(`Saved ${file.name} to ${saved.filePath} and indexed ${saved.totalPages} page(s) in Library Index!`);
     }
 
     public async getLibraryFiles() {
-        const exists = await this.app.vault.adapter.exists('DyResearch/Library/Originals');
-        if (!exists) return [];
-        const files = await this.app.vault.adapter.list('DyResearch/Library/Originals');
-        return files.files.map(f => ({
-            title: f.split('/').pop(),
-            type: f.endsWith('.pdf') ? 'PDF' : 'Document',
-            authors: 'Unknown',
-            subject: 'General'
-        }));
+        return await listLibraryCatalog(this.app);
     }
 
-    public async deleteLibraryFile(filename: string) {
-        const path = `DyResearch/Library/Originals/${filename}`;
-        const exists = await this.app.vault.adapter.exists(path);
-        if (exists) {
-            await this.app.vault.adapter.remove(path);
+    public async deleteLibraryFile(titleOrFilename: string) {
+        const entries = await listLibraryCatalog(this.app);
+        const safeTarget = sanitizeFileName(titleOrFilename).toLowerCase();
+        const match = entries.find(e =>
+            e.title.toLowerCase() === titleOrFilename.toLowerCase() ||
+            sanitizeFileName(e.title).toLowerCase() === safeTarget ||
+            e.filePath.endsWith(`/${titleOrFilename}`)
+        );
+
+        if (match) {
+            if (match.indexPath && await this.app.vault.adapter.exists(match.indexPath)) {
+                await this.app.vault.adapter.remove(match.indexPath);
+            }
+            if (match.filePath && await this.app.vault.adapter.exists(match.filePath)) {
+                await this.app.vault.adapter.remove(match.filePath);
+            }
         }
     }
 }

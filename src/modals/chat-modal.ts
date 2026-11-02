@@ -1,5 +1,207 @@
-import { App, Modal, MarkdownRenderer, setIcon, Notice } from 'obsidian';
+import { App, Modal, MarkdownRenderer, setIcon } from 'obsidian';
 import type DyResearchPlugin from '../main';
+
+export interface ChatInterfaceOptions {
+    isDocked?: boolean;
+}
+
+/**
+ * Shared chat interface renderer used by both the Floating Modal and the Docked Sidebar Tab.
+ */
+export async function renderChatInterface(
+    container: HTMLElement,
+    app: App,
+    plugin: DyResearchPlugin,
+    sessionId: string,
+    options: ChatInterfaceOptions = {}
+) {
+    container.empty();
+
+    // Session info & action bar
+    const sessionBar = container.createDiv({ cls: 'chat-session-bar' });
+    const sessionBadge = sessionBar.createDiv({ cls: 'chat-session-badge' });
+    const badgeIcon = sessionBadge.createSpan({ cls: 'chat-session-badge-icon' });
+    setIcon(badgeIcon, 'message-square');
+    sessionBadge.createSpan({ text: sessionId, cls: 'chat-session-id-text' });
+
+    const sessionActions = sessionBar.createDiv({ cls: 'chat-session-actions' });
+
+    const newChatBtn = sessionActions.createEl('button', {
+        cls: 'clickable-icon chat-action-btn',
+        attr: { 'aria-label': 'New chat session' }
+    });
+    setIcon(newChatBtn, 'plus');
+    newChatBtn.onClickEvent(async (e) => {
+        e.stopPropagation();
+        await plugin.startNewSession();
+    });
+
+    if (options.isDocked) {
+        const popOutBtn = sessionActions.createEl('button', {
+            cls: 'clickable-icon chat-action-btn',
+            attr: { 'aria-label': 'Pop out to floating window' }
+        });
+        setIcon(popOutBtn, 'external-link');
+        popOutBtn.onClickEvent(async (e) => {
+            e.stopPropagation();
+            await plugin.setChatMode('floating');
+        });
+    }
+
+    // Message history area
+    const chatHistory = container.createDiv({ cls: 'chat-history' });
+
+    const appendSimpleMessage = (parent: HTMLElement, sender: string, text: string): HTMLElement => {
+        const emptyState = parent.querySelector('.chat-empty-state');
+        if (emptyState) emptyState.remove();
+
+        const msgWrapper = parent.createDiv({ cls: 'chat-msg-wrapper' });
+        msgWrapper.createEl('small', { text: sender, cls: 'chat-sender' });
+        return msgWrapper.createDiv({ cls: 'chat-msg-content', text });
+    };
+
+    const appendStreamingMessage = (parent: HTMLElement, sender: string) => {
+        const emptyState = parent.querySelector('.chat-empty-state');
+        if (emptyState) emptyState.remove();
+
+        const msgWrapper = parent.createDiv({ cls: 'chat-msg-wrapper' });
+        msgWrapper.createEl('small', { text: sender, cls: 'chat-sender' });
+        const statusEl = msgWrapper.createDiv({ cls: 'chat-status-indicator' });
+        const thinkingEl = msgWrapper.createDiv({ cls: 'chat-thinking-block' });
+        const answerEl = msgWrapper.createDiv({ cls: 'chat-msg-content' });
+        thinkingEl.style.display = 'none';
+        return { statusEl, thinkingEl, answerEl };
+    };
+
+    let hasMessages = false;
+    try {
+        const session = await plugin.engine.ensureSession(sessionId);
+        if (session && session.events) {
+            for (const evt of session.events) {
+                const parts = (evt as any).content?.parts || (evt as any).newMessage?.parts || (evt as any).modelResponse?.parts || [];
+                const text = parts
+                    .filter((p: any) => p?.text && !p?.thought)
+                    .map((p: any) => p.text)
+                    .join('')
+                    .trim();
+                const role = (evt as any).author === 'user' || (evt as any).newMessage ? '👤 You' : '🤖 AI';
+
+                if (text) {
+                    hasMessages = true;
+                    const msgDiv = appendSimpleMessage(chatHistory, role, '');
+                    await MarkdownRenderer.render(app, text, msgDiv, '', plugin);
+                }
+            }
+        }
+    } catch (err) {
+        console.error("Could not load session history", err);
+    }
+
+    if (!hasMessages) {
+        const emptyState = chatHistory.createDiv({ cls: 'chat-empty-state' });
+        const emptyIcon = emptyState.createDiv({ cls: 'chat-empty-icon' });
+        setIcon(emptyIcon, 'bot');
+        emptyState.createEl('h4', { text: 'DyResearch Assistant', cls: 'chat-empty-title' });
+        emptyState.createEl('p', {
+            text: 'Ask a question about your Vault notes, explore your Library, or research a new topic.',
+            cls: 'chat-empty-desc'
+        });
+    } else {
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+    }
+
+    // Input area with auto-expanding textarea and Send button
+    const inputContainer = container.createDiv({ cls: 'chat-input-container' });
+    const inputField = inputContainer.createEl('textarea', {
+        placeholder: 'Ask DyResearch... (Enter to send, Shift+Enter for new line)',
+        cls: 'chat-input-textarea'
+    });
+    inputField.rows = 1;
+
+    const sendBtn = inputContainer.createEl('button', {
+        cls: 'chat-send-btn',
+        attr: { 'aria-label': 'Send message' }
+    });
+    setIcon(sendBtn, 'send');
+
+    inputField.addEventListener('input', () => {
+        inputField.style.height = 'auto';
+        inputField.style.height = `${Math.min(inputField.scrollHeight, 160)}px`;
+    });
+
+    let isSending = false;
+    const submitMessage = async () => {
+        if (isSending) return;
+        const userQuery = inputField.value.trim();
+        if (!userQuery) return;
+
+        isSending = true;
+        sendBtn.disabled = true;
+        inputField.value = '';
+        inputField.style.height = 'auto';
+
+        appendSimpleMessage(chatHistory, '👤 You', userQuery);
+        const ai = appendStreamingMessage(chatHistory, '🤖 AI');
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+
+        try {
+            let fullAnswer = '';
+            const stream = plugin.engine.sendMessage(plugin.currentSessionId, userQuery);
+            for await (const chunk of stream) {
+                let chunkText = '';
+                const parts = (chunk as any).content?.parts || (chunk as any).newMessage?.parts || (chunk as any).modelResponse?.parts || [];
+                for (const part of parts) {
+                    if (part.text && !part.thought) chunkText += part.text;
+                }
+                if (!chunkText && (chunk as any).text) {
+                    chunkText = (chunk as any).text;
+                }
+
+                const fnCall = parts.find((p: any) => p.functionCall)?.functionCall || (chunk as any).actions?.functionCalls?.[0];
+                const transferTarget = (chunk as any).actions?.transferToAgent || (fnCall?.name === 'transfer_to_agent' ? fnCall.args?.agent_name : null);
+
+                if (chunkText) {
+                    fullAnswer += chunkText;
+                    ai.answerEl.empty();
+                    await MarkdownRenderer.render(app, fullAnswer, ai.answerEl, '', plugin);
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                } else if ((chunk as any).errorMessage) {
+                    ai.answerEl.setText(`❌ Error: ${(chunk as any).errorMessage}`);
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                } else if (transferTarget) {
+                    ai.answerEl.empty();
+                    await MarkdownRenderer.render(app, fullAnswer + `\n\n*🔄 Transferring to ${transferTarget}...*`, ai.answerEl, '', plugin);
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                } else if (fnCall) {
+                    const fnName = fnCall.name;
+                    ai.answerEl.empty();
+                    await MarkdownRenderer.render(app, fullAnswer + `\n\n*Working: ⚙️ Running ${fnName}...*`, ai.answerEl, '', plugin);
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                }
+            }
+        } catch (err: any) {
+            ai.answerEl.setText(`❌ Error: ${err.message || err.toString()}`);
+            console.error(err);
+        } finally {
+            isSending = false;
+            sendBtn.disabled = false;
+            inputField.focus();
+        }
+    };
+
+    inputField.addEventListener('keydown', async (e: KeyboardEvent) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            await submitMessage();
+        }
+    });
+
+    sendBtn.onClickEvent(async () => {
+        await submitMessage();
+    });
+
+    setTimeout(() => inputField.focus(), 50);
+}
 
 export class ChatModal extends Modal {
     plugin: DyResearchPlugin;
@@ -8,7 +210,6 @@ export class ChatModal extends Modal {
 
     private minBtn: HTMLElement;
     private mainBodyWrapper: HTMLElement;
-    private chatHistory: HTMLElement;
 
     constructor(app: App, plugin: DyResearchPlugin) {
         super(app);
@@ -18,12 +219,14 @@ export class ChatModal extends Modal {
     async onOpen() {
         const { contentEl } = this;
         contentEl.addClass('dy-chat-modal');
-        
+
         const modalEl = contentEl.closest('.modal') as HTMLElement;
-        
+
         if (modalEl) {
             modalEl.addClass('dy-chat-modal-parent');
-            modalEl.parentElement.style.pointerEvents = 'none';
+            if (modalEl.parentElement) {
+                modalEl.parentElement.style.pointerEvents = 'none';
+            }
             modalEl.style.pointerEvents = 'auto';
             modalEl.style.position = 'absolute';
             modalEl.style.margin = '0';
@@ -31,65 +234,65 @@ export class ChatModal extends Modal {
             modalEl.style.height = this.plugin.settings.chatHeight;
             modalEl.style.padding = '0';
             const defaultCloseBtn = modalEl.querySelector('.modal-close-button') as HTMLElement;
-            if (defaultCloseBtn) defaultCloseBtn.style.display = 'none';
+            if (defaultCloseBtn) defaultCloseBtn.remove();
         }
 
         const headerContainer = contentEl.createDiv({ cls: 'chat-modal-header-wrapper' });
-        headerContainer.style.display = 'flex';
-        headerContainer.style.justifyContent = 'space-between';
-        headerContainer.style.alignItems = 'center';
-        headerContainer.style.cursor = 'grab';
-        headerContainer.style.padding = '10px 14px';
-        headerContainer.style.borderBottom = '1px solid var(--background-modifier-border)';
-        
+
         headerContainer.addEventListener('dblclick', (e) => {
             if ((e.target as HTMLElement).closest('button')) return;
             this.toggleMinimize();
         });
 
-        const headerTitle = headerContainer.createEl('h2', { text: '🤖 DyResearch Assistant', cls: 'chat-modal-header' });
+        headerContainer.createEl('h2', { text: '🤖 DyResearch Assistant', cls: 'chat-modal-header' });
         const controlsContainer = headerContainer.createDiv({ cls: 'chat-modal-controls' });
 
-        this.minBtn = controlsContainer.createEl('button', { cls: 'clickable-icon', attr: { "aria-label": "Minimize" } });
-        this.minBtn.style.width = '24px';
-        this.minBtn.style.height = '24px';
+        const dockBtn = controlsContainer.createEl('button', {
+            cls: 'clickable-icon',
+            attr: { 'aria-label': 'Dock to right sidebar' }
+        });
+        setIcon(dockBtn, 'panel-right');
+        dockBtn.onClickEvent(async (e) => {
+            e.stopPropagation();
+            await this.plugin.setChatMode('docked');
+        });
+
+        this.minBtn = controlsContainer.createEl('button', {
+            cls: 'clickable-icon',
+            attr: { 'aria-label': 'Minimize' }
+        });
         setIcon(this.minBtn, 'minus');
-
-        const closeBtn = controlsContainer.createEl('button', { cls: 'clickable-icon', attr: { "aria-label": "Close" } });
-        closeBtn.style.width = '24px';
-        closeBtn.style.height = '24px';
-        setIcon(closeBtn, 'x');
-
-        this.mainBodyWrapper = contentEl.createDiv({ cls: 'chat-main-body-wrapper' });
-        this.mainBodyWrapper.style.display = 'flex';
-        this.mainBodyWrapper.style.flexDirection = 'column';
-        this.mainBodyWrapper.style.padding = '14px';
-        this.mainBodyWrapper.style.flexGrow = '1';
-
         this.minBtn.onClickEvent((e) => {
             e.stopPropagation();
             this.toggleMinimize();
         });
 
+        const closeBtn = controlsContainer.createEl('button', {
+            cls: 'clickable-icon chat-close-btn',
+            attr: { 'aria-label': 'Close' }
+        });
+        setIcon(closeBtn, 'x');
         closeBtn.onClickEvent((e) => {
             e.stopPropagation();
             this.close();
         });
 
+        this.mainBodyWrapper = contentEl.createDiv({ cls: 'chat-main-body-wrapper' });
+
         if (modalEl) {
             headerContainer.addEventListener('pointerdown', (e: PointerEvent) => {
-                if (e.button !== 0) return; 
+                if (e.button !== 0) return;
                 if ((e.target as HTMLElement).closest('button')) return;
                 e.preventDefault();
-                
+
                 const rect = modalEl.getBoundingClientRect();
                 const parentEl = modalEl.parentElement;
                 if (!parentEl) return;
                 const parentRect = parentEl.getBoundingClientRect();
-                
+
                 const startLeft = rect.left - parentRect.left;
                 const startTop = rect.top - parentRect.top;
-                
+
                 const startX = e.clientX;
                 const startY = e.clientY;
 
@@ -112,13 +315,14 @@ export class ChatModal extends Modal {
             });
         }
 
-        this.chatHistory = this.mainBodyWrapper.createDiv({ cls: 'chat-history' });
-        await this.loadSessionContent(this.plugin.currentSessionId);
+        await renderChatInterface(this.mainBodyWrapper, this.app, this.plugin, this.plugin.currentSessionId, {
+            isDocked: false
+        });
 
         const resizeHandle = contentEl.createDiv({ cls: 'modal-resize-handle' });
         if (modalEl) {
             resizeHandle.addEventListener('pointerdown', (e: PointerEvent) => {
-                if (this.isMinimized) return; 
+                if (this.isMinimized) return;
                 e.preventDefault();
                 const startWidth = modalEl.offsetWidth;
                 const startHeight = modalEl.offsetHeight;
@@ -135,10 +339,10 @@ export class ChatModal extends Modal {
                 const onPointerUp = () => {
                     document.removeEventListener('pointermove', onPointerMove);
                     document.removeEventListener('pointerup', onPointerUp);
-                    
+
                     this.plugin.settings.chatWidth = modalEl.style.width;
                     this.plugin.settings.chatHeight = modalEl.style.height;
-                    this.plugin.saveSettings();
+                    this.plugin.saveData(this.plugin.settings);
                 };
 
                 document.addEventListener('pointermove', onPointerMove);
@@ -170,149 +374,9 @@ export class ChatModal extends Modal {
 
     public async switchSession(sessionId: string) {
         if (this.isMinimized) this.toggleMinimize();
-        await this.loadSessionContent(sessionId);
-    }
-
-    private async loadSessionContent(sessionId: string) {
-        this.chatHistory.empty();
-        
-        const sessionTitle = this.chatHistory.createEl('p', { 
-            text: `Session: ${sessionId}`, 
-            cls: 'chat-session-id' 
+        await renderChatInterface(this.mainBodyWrapper, this.app, this.plugin, sessionId, {
+            isDocked: false
         });
-        sessionTitle.style.order = "-100";
-
-        try {
-            const session = await this.plugin.engine.ensureSession(sessionId);
-            if (session && session.events) {
-                for (const evt of session.events) {
-                    const parts = (evt as any).content?.parts || (evt as any).newMessage?.parts || (evt as any).modelResponse?.parts || [];
-                    const text = parts
-                        .filter((p: any) => p?.text && !p?.thought)
-                        .map((p: any) => p.text)
-                        .join('')
-                        .trim();
-                    const role = (evt as any).author === 'user' || (evt as any).newMessage ? '👤 You' : '🤖 AI';
-                    
-                    if (text) {
-                        const msgDiv = this.appendSimpleMessage(this.chatHistory, role, '');
-                        await MarkdownRenderer.render(this.app, text, msgDiv, '', this.plugin);
-                    }
-                }
-            }
-            this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
-        } catch (err) {
-            console.error("Could not load session history", err);
-        }
-
-        let oldInput = this.mainBodyWrapper.querySelector('.chat-input-container');
-        if (oldInput) oldInput.remove();
-
-        const inputContainer = this.mainBodyWrapper.createDiv({ cls: 'chat-input-container' });
-        const inputField = inputContainer.createEl('textarea', { 
-            placeholder: 'Type your message...',
-            cls: 'chat-input-textarea'
-        });
-        inputField.rows = 1;
-        inputField.focus();
-
-        let isManuallyResized = false;
-        inputField.addEventListener('pointerdown', (e: PointerEvent) => {
-            const rect = inputField.getBoundingClientRect();
-            if (rect.width - (e.clientX - rect.left) < 20 && rect.height - (e.clientY - rect.top) < 20) {
-                isManuallyResized = true;
-                inputField.style.maxHeight = 'none';
-            }
-        });
-
-        inputField.addEventListener('input', () => {
-            if (!isManuallyResized) {
-                inputField.style.height = 'auto';
-                inputField.style.height = `${inputField.scrollHeight}px`;
-            } else if (inputField.value === '') {
-                isManuallyResized = false;
-                inputField.style.maxHeight = '';
-                inputField.style.height = 'auto';
-            }
-        });
-
-        inputField.addEventListener('keydown', async (e: KeyboardEvent) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                const userQuery = inputField.value;
-                if (userQuery.trim() !== '') {
-                    inputField.value = '';
-                    isManuallyResized = false;
-                    inputField.style.maxHeight = '';
-                    inputField.style.height = 'auto';
-
-                    this.appendSimpleMessage(this.chatHistory, '👤 You', userQuery);
-                    const ai = this.appendStreamingMessage(this.chatHistory, '🤖 AI');
-                    this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
-
-                    try {
-                        let fullAnswer = "";
-                        
-                        const stream = this.plugin.engine.sendMessage(this.plugin.currentSessionId, userQuery);
-                        for await (const chunk of stream) {
-                            console.log("ADK Event Chunk:", chunk);
-                            
-                            // A more robust way to pull text from ADK events 
-                            let chunkText = "";
-                            const parts = (chunk as any).content?.parts || (chunk as any).newMessage?.parts || (chunk as any).modelResponse?.parts || [];
-                            for (const part of parts) {
-                                if (part.text && !part.thought) chunkText += part.text;
-                            }
-                            if (!chunkText && (chunk as any).text) {
-                                chunkText = (chunk as any).text;
-                            }
-
-                            const fnCall = parts.find((p: any) => p.functionCall)?.functionCall || (chunk as any).actions?.functionCalls?.[0];
-                            const transferTarget = (chunk as any).actions?.transferToAgent || (fnCall?.name === 'transfer_to_agent' ? fnCall.args?.agent_name : null);
-
-                            if (chunkText) {
-                                fullAnswer += chunkText;
-                                ai.answerEl.empty();
-                                await MarkdownRenderer.render(this.app, fullAnswer, ai.answerEl, '', this.plugin);
-                                this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
-                            } else if ((chunk as any).errorMessage) {
-                                ai.answerEl.setText(`❌ Error: ${(chunk as any).errorMessage}`);
-                                this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
-                            } else if (transferTarget) {
-                                ai.answerEl.empty();
-                                await MarkdownRenderer.render(this.app, fullAnswer + `\n\n*🔄 Transferring to ${transferTarget}...*`, ai.answerEl, '', this.plugin);
-                                this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
-                            } else if (fnCall) {
-                                const fnName = fnCall.name;
-                                ai.answerEl.empty();
-                                await MarkdownRenderer.render(this.app, fullAnswer + `\n\n*Working: ⚙️ Running ${fnName}...*`, ai.answerEl, '', this.plugin);
-                                this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
-                            }
-                        }
-
-                    } catch (err: any) {
-                        ai.answerEl.setText(`❌ Error: ${err.message || err.toString()}`);
-                        console.error(err);
-                    }
-                }
-            }
-        });
-    }
-
-    appendStreamingMessage(container: HTMLElement, sender: string) {
-        const msgWrapper = container.createDiv({ cls: 'chat-msg-wrapper' });
-        msgWrapper.createEl('small', { text: sender, cls: 'chat-sender' });
-        const statusEl = msgWrapper.createDiv({ cls: 'chat-status-indicator' });
-        const thinkingEl = msgWrapper.createDiv({ cls: 'chat-thinking-block' });
-        const answerEl = msgWrapper.createDiv({ cls: 'chat-msg-content' });
-        thinkingEl.style.display = 'none';
-        return { statusEl, thinkingEl, answerEl };
-    }
-
-    appendSimpleMessage(container: HTMLElement, sender: string, text: string): HTMLElement {
-        const msgWrapper = container.createDiv({ cls: 'chat-msg-wrapper' });
-        msgWrapper.createEl('small', { text: sender, cls: 'chat-sender' });
-        return msgWrapper.createDiv({ cls: 'chat-msg-content', text: text });
     }
 
     onClose() {

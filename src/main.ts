@@ -31,22 +31,67 @@ export default class DyResearchPlugin extends Plugin {
            this.openOrCreateChat();
         });
 
-        this.addRibbonIcon('history', 'View History', () => {
-            this.activateView();
+        this.addRibbonIcon('history', 'DyResearch Panel', () => {
+            this.activateView('chats');
         });
     }
 
+    // Switch between docked right-sidebar panel and floating modal window
+    public async setChatMode(mode: 'docked' | 'floating') {
+        this.settings.chatDisplayMode = mode;
+        await this.saveData(this.settings);
+
+        if (mode === 'docked') {
+            if (this.activeChatModal) {
+                this.activeChatModal.close();
+            }
+            await this.activateView('chat');
+        } else {
+            const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_HISTORY)[0];
+            if (leaf && leaf.view instanceof HistoryView) {
+                if (leaf.view.getActiveTab() === 'chat') {
+                    leaf.view.setActiveTab('chats');
+                }
+            }
+            await this.openOrCreateChat('floating');
+        }
+    }
+
+    public async startNewSession() {
+        this.currentSessionId = `obsidian_${Date.now()}`;
+        await this.engine.ensureSession(this.currentSessionId);
+        if (this.activeChatModal) {
+            await this.activeChatModal.switchSession(this.currentSessionId);
+            const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_HISTORY)[0];
+            if (leaf && leaf.view instanceof HistoryView) {
+                await leaf.view.refreshView();
+            }
+        } else {
+            await this.activateView('chat');
+        }
+    }
+
     // Centralized controller to enforce a single chat instance
-    public openOrCreateChat() {
+    public async openOrCreateChat(forceMode?: 'docked' | 'floating') {
+        const mode = forceMode || this.settings.chatDisplayMode || 'docked';
+        if (mode === 'docked') {
+            if (this.activeChatModal) {
+                this.activeChatModal.close();
+            }
+            await this.activateView('chat');
+            return;
+        }
+
         if (this.activeChatModal) {
             if (this.activeChatModal.isMinimized) this.activeChatModal.toggleMinimize();
+            await this.activeChatModal.switchSession(this.currentSessionId);
             return;
         }
         this.activeChatModal = new ChatModal(this.app, this);
         this.activeChatModal.open();
     }
 
-    async activateView() {
+    async activateView(tab?: 'chat' | 'chats' | 'library') {
         const { workspace } = this.app;
         let leaf = workspace.getLeavesOfType(VIEW_TYPE_HISTORY)[0];
         if (!leaf) {
@@ -54,6 +99,9 @@ export default class DyResearchPlugin extends Plugin {
             await leaf.setViewState({ type: VIEW_TYPE_HISTORY, active: true });
         }
         workspace.revealLeaf(leaf);
+        if (tab && leaf.view instanceof HistoryView) {
+            leaf.view.setActiveTab(tab);
+        }
     }
 
     async loadSettings() {

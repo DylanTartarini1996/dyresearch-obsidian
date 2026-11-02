@@ -15,6 +15,19 @@ export class DyResearchSettingTab extends PluginSettingTab {
 
         containerEl.createEl('h2', { text: 'DyResearch Local Engine Settings' });
 
+        new Setting(containerEl)
+            .setName('Chat Display Mode')
+            .setDesc('Choose whether the chat opens docked in the right sidebar or as a floating window.')
+            .addDropdown(d => d
+                .addOptions({
+                    'docked': 'Docked in Right Sidebar',
+                    'floating': 'Floating Window'
+                })
+                .setValue(this.plugin.settings.chatDisplayMode || 'docked')
+                .onChange(async (val: 'docked' | 'floating') => {
+                    await this.plugin.setChatMode(val);
+                }));
+
         // API KEYS
         containerEl.createEl('h3', { text: 'API Keys' });
         
