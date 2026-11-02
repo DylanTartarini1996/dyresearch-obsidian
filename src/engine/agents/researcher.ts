@@ -14,12 +14,9 @@ export function createResearcherAgent(config: AgentConfig, app: any): LlmAgent {
     return new LlmAgent({
         name: 'researcher_agent',
         model: config.model,
-        inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } } as any,
         description: 'Web search and data acquisition specialist. Call this agent to search the internet, find alternative perspectives, scrape information from specific websites (like Arxiv or Reddit), or download PDFs and documents.',
-        inputSchema: { type: 'OBJECT', properties: { task: { type: 'STRING', description: 'The instruction for this agent.' } } } as any,
-        systemInstruction: {
-            parts: [{
-                text: "You are the Lead Researcher of the DyResearch Team. Your mission is to scour the internet for high-quality information, " +
+        instruction:
+            "You are the Lead Researcher of the DyResearch Team. Your mission is to scour the internet for high-quality information, " +
                       "papers, and articles to expand the user's knowledge base.\n\n" +
                       
                       "### PHASE 1: QUERY EXPANSION & SEARCH\n" +
@@ -34,9 +31,7 @@ export function createResearcherAgent(config: AgentConfig, app: any): LlmAgent {
                       "### PHASE 3: HANDOFF\n" +
                       "When you have extracted the text or downloaded the files, present your findings clearly. " +
                       "If you scraped a website, provide a brief summary of the text and offer to hand the full text over to the Librarian for ingestion. " +
-                      "ALWAYS include the source URLs."
-            }]
-        },
+                      "ALWAYS include the source URLs.",
         tools: tools
     });
 }

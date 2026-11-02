@@ -68,6 +68,14 @@ export class DyResearchEngine {
         });
     }
 
+    public async ensureSession(sessionId: string) {
+        return await this.sessionService.getOrCreateSession({
+            appName: 'dyresearch',
+            userId: 'local-user',
+            sessionId: sessionId
+        });
+    }
+
     public async *sendMessage(sessionId: string, text: string): AsyncGenerator<Event, void, undefined> {
         if (!this.runner) {
             this.initialize();
@@ -77,14 +85,7 @@ export class DyResearchEngine {
             throw new Error("Engine not initialized");
         }
 
-        const existingSession = await this.sessionService.getSession({ appName: 'dyresearch', sessionId });
-        if (!existingSession) {
-            await this.sessionService.createSession({
-                appName: 'dyresearch',
-                userId: 'local-user',
-                sessionId: sessionId
-            });
-        }
+        await this.ensureSession(sessionId);
 
         const events = this.runner.runAsync({
             userId: 'local-user',
@@ -102,12 +103,7 @@ export class DyResearchEngine {
     }
 
     public async renameSession(oldSessionId: string, newSessionId: string) {
-        const oldPath = `DyResearch/Sessions/${oldSessionId}.json`;
-        const newPath = `DyResearch/Sessions/${newSessionId}.json`;
-        const exists = await this.app.vault.adapter.exists(oldPath);
-        if (exists) {
-            await this.app.vault.adapter.rename(oldPath, newPath);
-        }
+        await this.sessionService.renameSession(oldSessionId, newSessionId);
     }
 
     public async ingestFile(file: File, metadata: any) {

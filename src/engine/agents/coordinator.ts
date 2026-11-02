@@ -11,9 +11,8 @@ export function createCoordinatorAgent(config: AgentConfig, subAgents: LlmAgent[
         name: 'study_coordinator',
         model: config.model,
         description: 'The primary interface for the AI Study System DyResearch. Routes tasks between experts.',
-        systemInstruction: {
-            parts: [{
-                text: "You are the Study System Coordinator of the DyResearch Team. You manage a team of four specialists. Your primary goal " +
+        instruction:
+            "You are the Study System Coordinator of the DyResearch Team. You manage a team of four specialists. Your primary goal " +
                       "is to help the user learn, organize research, and manage their knowledge base. Satisfy user requests by delegating to the right expert or chaining them together.\n\n" +
                       
                       "### YOUR TEAM & WHEN TO USE THEM:\n" +
@@ -42,9 +41,7 @@ export function createCoordinatorAgent(config: AgentConfig, subAgents: LlmAgent[
                       "### OPERATIONAL RULES:\n" +
                       "- State Tracking: Always pass relevant info (like file paths or scraped text) from one agent to the next.\n" +
                       "- Confirmation: Briefly tell the user what you are doing (e.g., 'I've asked the Researcher to find that paper...').\n" +
-                      "- Precision: When delegating to the Librarian, always specify the 'subject' index."
-            }]
-        },
-        tools: subAgents // In TS ADK, subAgents can be passed as tools or via a specific subAgents property depending on version. Let's pass them as tools since LlmAgents act as tools when routed.
+                      "- Precision: When delegating to the Librarian, always specify the 'subject' index.",
+        subAgents: subAgents
     });
 }

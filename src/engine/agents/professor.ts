@@ -14,12 +14,9 @@ export function createProfessorAgent(config: AgentConfig, app: any): LlmAgent {
     return new LlmAgent({
         name: 'professor_agent',
         model: config.model,
-        inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } } as any,
         description: 'The lead tutor and subject matter expert. Synthesizes user context with external RAG data.',
-        inputSchema: { type: 'OBJECT', properties: { task: { type: 'STRING', description: 'The instruction for this agent.' } } } as any,
-        systemInstruction: {
-            parts: [{
-                text: "You are the Professor of the DyResearch Team, the lead educator of this system. Your mission is to provide clear, " +
+        instruction:
+            "You are the Professor of the DyResearch Team, the lead educator of this system. Your mission is to provide clear, " +
                       "accurate, and highly pedagogical explanations by combining the user's personal context with their library.\n\n" +
                       
                       "### PHASE 1: INTERNAL WORKING MEMORY ENFORCEMENT (VAULT FIRST)\n" +
@@ -46,9 +43,7 @@ export function createProfessorAgent(config: AgentConfig, app: any): LlmAgent {
                       "1. Pedagogical Synthesis: Do not just copy-paste chunks. Synthesize them into a cohesive lesson using analogies and the Feynman technique.\n" +
                       "2. Mandatory Citations: You MUST include inline citations for every major claim. Use regular markdown for paper citations, but use [[Wikilinks]] when referencing notes originating from the user's local Obsidian Vault.\n" +
                       "3. Structural Clarity: Use rich Markdown (Headers, bolding, bullet points) so the NoteTaker has an impeccable layout to reference later.\n" +
-                      "4. The Socratic Method: Unless the user explicitly asks for a swift, brief summary, end your lesson with a brief, thought-provoking question that naturally extends from their current research path."
-            }]
-        },
+                      "4. The Socratic Method: Unless the user explicitly asks for a swift, brief summary, end your lesson with a brief, thought-provoking question that naturally extends from their current research path.",
         tools: tools
     });
 }

@@ -121,13 +121,14 @@ var HistoryView = class extends import_obsidian2.ItemView {
     const buttonContainer = header.createDiv({ cls: "history-buttons" });
     const newChatBtn = buttonContainer.createEl("button", { cls: "dy-new-chat-btn" });
     (0, import_obsidian2.setIcon)(newChatBtn, "plus");
-    newChatBtn.onClickEvent(() => {
+    newChatBtn.onClickEvent(async () => {
       this.plugin.currentSessionId = `obsidian_${Date.now()}`;
+      await this.plugin.engine.ensureSession(this.plugin.currentSessionId);
       this.plugin.openOrCreateChat();
       if (this.plugin.activeChatModal) {
-        this.plugin.activeChatModal.switchSession(this.plugin.currentSessionId);
+        await this.plugin.activeChatModal.switchSession(this.plugin.currentSessionId);
       }
-      this.refreshView();
+      await this.refreshView();
     });
     const searchContainer = container.createDiv({ cls: "history-search-container" });
     const searchInput = searchContainer.createEl("input", {
@@ -466,17 +467,12 @@ var ChatModal = class extends import_obsidian3.Modal {
     });
     sessionTitle.style.order = "-100";
     try {
-      const session = await this.plugin.engine.sessionService.getSession({ appName: "dyresearch", sessionId });
+      const session = await this.plugin.engine.ensureSession(sessionId);
       if (session && session.events) {
         for (const evt of session.events) {
-          let text = "";
-          let role = "\u{1F916} AI";
-          if (evt.newMessage?.parts?.[0]?.text) {
-            text = evt.newMessage.parts[0].text;
-            role = "\u{1F464} You";
-          } else if (evt.modelResponse?.parts?.[0]?.text) {
-            text = evt.modelResponse.parts[0].text;
-          }
+          const parts = evt.content?.parts || evt.newMessage?.parts || evt.modelResponse?.parts || [];
+          const text = parts.filter((p) => p?.text && !p?.thought).map((p) => p.text).join("").trim();
+          const role = evt.author === "user" || evt.newMessage ? "\u{1F464} You" : "\u{1F916} AI";
           if (text) {
             const msgDiv = this.appendSimpleMessage(this.chatHistory, role, "");
             await import_obsidian3.MarkdownRenderer.render(this.app, text, msgDiv, "", this.plugin);
@@ -535,19 +531,30 @@ var ChatModal = class extends import_obsidian3.Modal {
               let chunkText = "";
               const parts = chunk.content?.parts || chunk.newMessage?.parts || chunk.modelResponse?.parts || [];
               for (const part of parts) {
-                if (part.text)
+                if (part.text && !part.thought)
                   chunkText += part.text;
               }
               if (!chunkText && chunk.text) {
                 chunkText = chunk.text;
               }
+              const fnCall = parts.find((p) => p.functionCall)?.functionCall || chunk.actions?.functionCalls?.[0];
+              const transferTarget = chunk.actions?.transferToAgent || (fnCall?.name === "transfer_to_agent" ? fnCall.args?.agent_name : null);
               if (chunkText) {
                 fullAnswer += chunkText;
                 ai2.answerEl.empty();
                 await import_obsidian3.MarkdownRenderer.render(this.app, fullAnswer, ai2.answerEl, "", this.plugin);
                 this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
-              } else if (chunk.actions?.functionCalls?.length > 0) {
-                const fnName = chunk.actions.functionCalls[0].name;
+              } else if (chunk.errorMessage) {
+                ai2.answerEl.setText(`\u274C Error: ${chunk.errorMessage}`);
+                this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
+              } else if (transferTarget) {
+                ai2.answerEl.empty();
+                await import_obsidian3.MarkdownRenderer.render(this.app, fullAnswer + `
+
+*\u{1F504} Transferring to ${transferTarget}...*`, ai2.answerEl, "", this.plugin);
+                this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
+              } else if (fnCall) {
+                const fnName = fnCall.name;
                 ai2.answerEl.empty();
                 await import_obsidian3.MarkdownRenderer.render(this.app, fullAnswer + `
 
@@ -31453,36 +31460,127 @@ a(Fb, "App");
 Gb();
 
 // src/engine/session-service.ts
+var STATE_BLOCK_REGEX = /<!--\s*dyresearch-session-state\r?\n([\s\S]*?)\r?\n-->/;
 var ObsidianSessionService = class extends Du {
   app;
   basePath = "DyResearch/Sessions";
   constructor(app) {
     super();
     this.app = app;
-    this.ensureBaseDirectory();
+    this.ensureBaseDirectory().catch(() => {
+    });
   }
   async ensureBaseDirectory() {
-    const exists = await this.app.vault.adapter.exists(this.basePath);
-    if (!exists) {
-      await this.app.vault.adapter.mkdir(this.basePath);
+    const parts = this.basePath.split("/");
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!await this.app.vault.adapter.exists(current)) {
+        if (this.app.vault.createFolder) {
+          try {
+            await this.app.vault.createFolder(current);
+          } catch {
+            if (!await this.app.vault.adapter.exists(current)) {
+              await this.app.vault.adapter.mkdir(current);
+            }
+          }
+        } else {
+          await this.app.vault.adapter.mkdir(current);
+        }
+      }
     }
   }
   getFilePath(sessionId) {
-    return `${this.basePath}/${sessionId}.json`;
+    return `${this.basePath}/${sessionId}.md`;
+  }
+  serializeSessionToMarkdown(session) {
+    const lines = [
+      "---",
+      `id: ${session.id}`,
+      `sessionId: ${session.sessionId}`,
+      `appName: ${session.appName}`,
+      `userId: ${session.userId}`,
+      `createdAt: ${session.createdAt}`,
+      `updatedAt: ${session.updatedAt}`,
+      `lastUpdateTime: ${session.lastUpdateTime}`,
+      "---",
+      "",
+      `# Session: ${session.sessionId}`,
+      ""
+    ];
+    for (const evt of session.events || []) {
+      const parts = evt.content?.parts || evt.newMessage?.parts || evt.modelResponse?.parts || [];
+      const text = parts.filter((p) => p?.text && !p?.thought).map((p) => p.text).join("").trim();
+      if (text) {
+        const role = evt.author === "user" ? "\u{1F464} You" : `\u{1F916} ${evt.author || "AI"}`;
+        lines.push(`### ${role}`, "", text, "");
+      } else if (evt.errorMessage) {
+        lines.push(`### \u26A0\uFE0F Error`, "", String(evt.errorMessage), "");
+      }
+    }
+    const payload = JSON.stringify({
+      id: session.id,
+      sessionId: session.sessionId,
+      appName: session.appName,
+      userId: session.userId,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      lastUpdateTime: session.lastUpdateTime,
+      state: session.state || {},
+      events: session.events || []
+    }).replace(/-->/g, "--\\u003e");
+    lines.push("<!-- dyresearch-session-state", payload, "-->", "");
+    return lines.join("\n");
+  }
+  parseSessionFromMarkdown(content, fallbackId) {
+    const match = content.match(STATE_BLOCK_REGEX);
+    const raw = match ? JSON.parse(match[1]) : JSON.parse(content);
+    const id2 = raw.id || raw.sessionId || fallbackId || `session_${Date.now()}`;
+    const updatedIso = raw.updatedAt || new Date(raw.lastUpdateTime || Date.now()).toISOString();
+    const createdIso = raw.createdAt || updatedIso;
+    const lastUpdateTime = typeof raw.lastUpdateTime === "number" ? raw.lastUpdateTime : new Date(updatedIso).getTime();
+    const rawEvents = Array.isArray(raw.events) ? raw.events : [];
+    const cleanedEvents = rawEvents.filter((e) => !(Array.isArray(e.longRunningToolIds) && e.longRunningToolIds.length > 0));
+    return {
+      id: id2,
+      sessionId: id2,
+      appName: raw.appName || "dyresearch",
+      userId: raw.userId || "local-user",
+      state: raw.state || {},
+      events: cleanedEvents.map((e) => J(e)),
+      createdAt: createdIso,
+      updatedAt: updatedIso,
+      lastUpdateTime
+    };
+  }
+  async writeSessionFile(session) {
+    await this.ensureBaseDirectory();
+    const filePath = this.getFilePath(session.id || session.sessionId);
+    const content = this.serializeSessionToMarkdown(session);
+    const existingFile = this.app.vault.getAbstractFileByPath?.(filePath);
+    if (existingFile && this.app.vault.modify) {
+      await this.app.vault.modify(existingFile, content);
+    } else if (!existingFile && this.app.vault.create && !await this.app.vault.adapter.exists(filePath)) {
+      await this.app.vault.create(filePath, content);
+    } else {
+      await this.app.vault.adapter.write(filePath, content);
+    }
   }
   async createSession(request) {
-    const sessionId = request.sessionId || `session_${Date.now()}`;
+    const sessionId = request.sessionId || `obsidian_${Date.now()}`;
+    const now = /* @__PURE__ */ new Date();
     const session = {
+      id: sessionId,
+      sessionId,
       appName: request.appName,
       userId: request.userId,
-      sessionId,
       state: request.state || {},
       events: [],
-      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      lastUpdateTime: now.getTime()
     };
-    const filePath = this.getFilePath(sessionId);
-    await this.app.vault.adapter.write(filePath, JSON.stringify(session, null, 2));
+    await this.writeSessionFile(session);
     return session;
   }
   async getSession(request) {
@@ -31491,10 +31589,10 @@ var ObsidianSessionService = class extends Du {
     if (!exists)
       return void 0;
     const content = await this.app.vault.adapter.read(filePath);
-    const session = JSON.parse(content);
-    return session;
+    return this.parseSessionFromMarkdown(content, request.sessionId);
   }
   async listSessions(request) {
+    await this.ensureBaseDirectory();
     const exists = await this.app.vault.adapter.exists(this.basePath);
     if (!exists) {
       return { sessions: [], page: 1, limit: 0, totalItems: 0, totalPages: 0 };
@@ -31502,33 +31600,49 @@ var ObsidianSessionService = class extends Du {
     const files = await this.app.vault.adapter.list(this.basePath);
     const sessions = [];
     for (const file of files.files) {
-      if (file.endsWith(".json")) {
+      if (file.endsWith(".md") || file.endsWith(".json")) {
         const content = await this.app.vault.adapter.read(file);
         try {
-          const session = JSON.parse(content);
+          const fallbackId = file.split("/").pop()?.replace(/\.(md|json)$/, "");
+          const session = this.parseSessionFromMarkdown(content, fallbackId);
           if (session.appName === request.appName && (!request.userId || session.userId === request.userId)) {
             sessions.push(session);
           }
         } catch (e) {
-          console.error("Failed to parse session file", file);
+          console.error("Failed to parse session file", file, e);
         }
       }
     }
-    sessions.sort((a7, b) => new Date(b.updatedAt).getTime() - new Date(a7.updatedAt).getTime());
+    sessions.sort((a7, b) => b.lastUpdateTime - a7.lastUpdateTime);
     const totalItems = sessions.length;
     const limit = request.limit || totalItems;
     const page = request.page || 1;
     return {
       sessions,
-      // Ideally paginated, but returning all for now
       page,
       limit,
       totalItems,
       totalPages: limit > 0 ? Math.ceil(totalItems / limit) : 1
     };
   }
+  async renameSession(oldSessionId, newSessionId) {
+    const session = await this.getSession({ appName: "dyresearch", userId: "local-user", sessionId: oldSessionId });
+    if (!session)
+      return;
+    session.id = newSessionId;
+    session.sessionId = newSessionId;
+    session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    session.lastUpdateTime = Date.now();
+    await this.writeSessionFile(session);
+    await this.deleteSession({ appName: session.appName, userId: session.userId, sessionId: oldSessionId });
+  }
   async deleteSession(request) {
     const filePath = this.getFilePath(request.sessionId);
+    const existingFile = this.app.vault.getAbstractFileByPath?.(filePath);
+    if (existingFile && this.app.vault.delete) {
+      await this.app.vault.delete(existingFile);
+      return;
+    }
     const exists = await this.app.vault.adapter.exists(filePath);
     if (exists) {
       await this.app.vault.adapter.remove(filePath);
@@ -31536,9 +31650,13 @@ var ObsidianSessionService = class extends Du {
   }
   async appendEvent(request) {
     const event = await super.appendEvent(request);
-    request.session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-    const filePath = this.getFilePath(request.session.sessionId);
-    await this.app.vault.adapter.write(filePath, JSON.stringify(request.session, null, 2));
+    const session = request.session;
+    const sessionId = session.id || session.sessionId;
+    session.id = sessionId;
+    session.sessionId = sessionId;
+    session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    session.lastUpdateTime = event.timestamp || Date.now();
+    await this.writeSessionFile(session);
     return event;
   }
 };
@@ -31549,13 +31667,8 @@ function createCoordinatorAgent(config, subAgents) {
     name: "study_coordinator",
     model: config.model,
     description: "The primary interface for the AI Study System DyResearch. Routes tasks between experts.",
-    systemInstruction: {
-      parts: [{
-        text: "You are the Study System Coordinator of the DyResearch Team. You manage a team of four specialists. Your primary goal is to help the user learn, organize research, and manage their knowledge base. Satisfy user requests by delegating to the right expert or chaining them together.\n\n### YOUR TEAM & WHEN TO USE THEM:\n1. LIBRARIAN: Handles all database tasks (Ingesting new files, listing available books, deleting indices).\n2. PROFESSOR: The subject matter expert. Use them to explain concepts, perform RAG searches, and provide academic insights.\n3. NOTETAKER: The Obsidian specialist. Use them to format findings into 'Evergreen' notes and save them to the vault.\n4. RESEARCHER: Is able to perform web search and retrieve new information for the system from websites or articles across the internet.\n\n### MULTI-STEP WORKFLOW PATTERNS:\nAs Coordinator, you must recognize when a task requires multiple agents:\n\n\u{1F7E2} THE 'ACQUIRE & INDEX' FLOW:\nUser: 'Find a paper on Quantum Computing and add it to my physics index.'\n1. Call RESEARCHER to find and download the PDF.\n2. Once downloaded, call LIBRARIAN with the file path and subject='physics' to ingest it.\n\n\u{1F535} THE 'RESEARCH & LEARN' FLOW:\nUser: 'What are the latest news on SpaceX? Explain it simply.'\n1. Call RESEARCHER to scrape latest news/articles.\n2. Pass the scraped text to the PROFESSOR to create a simple explanation.\n\n\u{1F7E3} THE 'FULL KNOWLEDGE PIPELINE':\nUser: 'Research X, save it to my library, and write an Obsidian note about it.'\n1. RESEARCHER (Find/Scrape) -> 2. LIBRARIAN (Ingest) -> 3. NOTETAKER (Format & Save).\n\n### OPERATIONAL RULES:\n- State Tracking: Always pass relevant info (like file paths or scraped text) from one agent to the next.\n- Confirmation: Briefly tell the user what you are doing (e.g., 'I've asked the Researcher to find that paper...').\n- Precision: When delegating to the Librarian, always specify the 'subject' index."
-      }]
-    },
-    tools: subAgents
-    // In TS ADK, subAgents can be passed as tools or via a specific subAgents property depending on version. Let's pass them as tools since LlmAgents act as tools when routed.
+    instruction: "You are the Study System Coordinator of the DyResearch Team. You manage a team of four specialists. Your primary goal is to help the user learn, organize research, and manage their knowledge base. Satisfy user requests by delegating to the right expert or chaining them together.\n\n### YOUR TEAM & WHEN TO USE THEM:\n1. LIBRARIAN: Handles all database tasks (Ingesting new files, listing available books, deleting indices).\n2. PROFESSOR: The subject matter expert. Use them to explain concepts, perform RAG searches, and provide academic insights.\n3. NOTETAKER: The Obsidian specialist. Use them to format findings into 'Evergreen' notes and save them to the vault.\n4. RESEARCHER: Is able to perform web search and retrieve new information for the system from websites or articles across the internet.\n\n### MULTI-STEP WORKFLOW PATTERNS:\nAs Coordinator, you must recognize when a task requires multiple agents:\n\n\u{1F7E2} THE 'ACQUIRE & INDEX' FLOW:\nUser: 'Find a paper on Quantum Computing and add it to my physics index.'\n1. Call RESEARCHER to find and download the PDF.\n2. Once downloaded, call LIBRARIAN with the file path and subject='physics' to ingest it.\n\n\u{1F535} THE 'RESEARCH & LEARN' FLOW:\nUser: 'What are the latest news on SpaceX? Explain it simply.'\n1. Call RESEARCHER to scrape latest news/articles.\n2. Pass the scraped text to the PROFESSOR to create a simple explanation.\n\n\u{1F7E3} THE 'FULL KNOWLEDGE PIPELINE':\nUser: 'Research X, save it to my library, and write an Obsidian note about it.'\n1. RESEARCHER (Find/Scrape) -> 2. LIBRARIAN (Ingest) -> 3. NOTETAKER (Format & Save).\n\n### OPERATIONAL RULES:\n- State Tracking: Always pass relevant info (like file paths or scraped text) from one agent to the next.\n- Confirmation: Briefly tell the user what you are doing (e.g., 'I've asked the Researcher to find that paper...').\n- Precision: When delegating to the Librarian, always specify the 'subject' index.",
+    subAgents
   });
 }
 
@@ -31565,6 +31678,17 @@ function getLibrarianTools(app) {
     new Dt({
       name: "ingest_source_chunks",
       description: "Ingests text chunks into the knowledge base.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          title: { type: "STRING", description: "Document title." },
+          subject: { type: "STRING", description: "Lowercase subject category." },
+          author: { type: "STRING", description: "Author name." },
+          source_type: { type: "STRING", description: "Source type (Book, Web, Article)." },
+          content: { type: "STRING", description: "Text content to ingest." }
+        },
+        required: ["title", "subject"]
+      },
       execute: async (args) => {
         const title = args.title || "Untitled";
         const path = `DyResearch/Library/${title.replace(/[^a-z0-9]/gi, "_")}.md`;
@@ -31585,6 +31709,17 @@ ${args.chunks?.join("\\n\\n") || args.content}`;
     new Dt({
       name: "ingest_source_file",
       description: "Ingests a full file into the knowledge base.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          title: { type: "STRING", description: "Document title." },
+          subject: { type: "STRING", description: "Lowercase subject category." },
+          author: { type: "STRING", description: "Author name." },
+          source_type: { type: "STRING", description: "Source type." },
+          content: { type: "STRING", description: "Full text content." }
+        },
+        required: ["title", "subject", "content"]
+      },
       execute: async (args) => {
         const title = args.title || "Untitled";
         const path = `DyResearch/Library/${title.replace(/[^a-z0-9]/gi, "_")}.md`;
@@ -31605,6 +31740,10 @@ ${args.content}`;
     new Dt({
       name: "list_available_sources",
       description: "Lists all documents and subjects available in the library.",
+      parameters: {
+        type: "OBJECT",
+        properties: {}
+      },
       execute: async (args) => {
         const exists = await app.vault.adapter.exists("DyResearch/Library");
         if (!exists)
@@ -31616,6 +31755,13 @@ ${args.content}`;
     new Dt({
       name: "delete_source",
       description: "Deletes a specific document from the library by title.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          title: { type: "STRING", description: "Exact title of the document to delete." }
+        },
+        required: ["title"]
+      },
       execute: async (args) => {
         const title = args.title;
         if (!title)
@@ -31632,6 +31778,13 @@ ${args.content}`;
     new Dt({
       name: "delete_by_subject",
       description: "Purges all documents related to a specific subject.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          subject: { type: "STRING", description: "Subject category to purge." }
+        },
+        required: ["subject"]
+      },
       execute: async (args) => {
         return "Purge by subject requires parsing frontmatter, skipped for safety.";
       }
@@ -31645,13 +31798,8 @@ function createLibrarianAgent(config, app) {
   return new cp({
     name: "librarian_agent",
     model: config.model,
-    inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } },
     description: "The system's archivist. Manages ingestion, metadata, and database hygiene.",
-    systemInstruction: {
-      parts: [{
-        text: "You are the Head Librarian of the DyResearch Team, the sole administrator of the Vector Knowledge Base. Your mission is to ensure that all information is perfectly categorized, indexed by subject, and accurately retrievable for the Professor.\n\n### PHASE 1: DATA INGESTION (THE ARCHIVIST)\n1. Categorization: When a user provides text, a book, or a website, you MUST assign it a 'subject' (e.g., 'physics', 'law', 'personal'). If the user doesn't specify one, infer the most logical category.\n2. Batch Processing: Use the `ingest_source_chunks` or `ingest_source_file` tool to process content. Always capture the Title, Author, and Source Type (Book, Web, Article).\n3. Metadata Integrity: Ensure the 'subject' is always lowercase and consistent (e.g., don't mix 'Physics' and 'physics').\n\n### PHASE 2: INVENTORY & DISCOVERY\n1. Index Awareness: Before the Professor performs a search, you provide the map. Use `list_available_sources` to show what subjects and titles are currently available.\n2. Subject Filtering: Help the Professor narrow their search by telling them exactly which 'subject' index contains the relevant data.\n\n### PHASE 3: DATABASE HYGIENE (DELETION PROTOCOL)\n1. Targeted Removal: If a user wants to remove a specific document, use `delete_source` with the exact Title.\n2. Bulk Purge: Use `delete_by_subject` ONLY when the user explicitly asks to wipe an entire category (e.g., 'Clear all my biology notes').\n3. Confirmation: Always confirm the number of chunks deleted to the user so they know the operation was successful.\n\n### MANDATE\n- Never 'hallucinate' a source. If a book isn't in the list, it doesn't exist.\n- You are technical and organized. Your tone is helpful, formal, and precise."
-      }]
-    },
+    instruction: "You are the Head Librarian of the DyResearch Team, the sole administrator of the Vector Knowledge Base. Your mission is to ensure that all information is perfectly categorized, indexed by subject, and accurately retrievable for the Professor.\n\n### PHASE 1: DATA INGESTION (THE ARCHIVIST)\n1. Categorization: When a user provides text, a book, or a website, you MUST assign it a 'subject' (e.g., 'physics', 'law', 'personal'). If the user doesn't specify one, infer the most logical category.\n2. Batch Processing: Use the `ingest_source_chunks` or `ingest_source_file` tool to process content. Always capture the Title, Author, and Source Type (Book, Web, Article).\n3. Metadata Integrity: Ensure the 'subject' is always lowercase and consistent (e.g., don't mix 'Physics' and 'physics').\n\n### PHASE 2: INVENTORY & DISCOVERY\n1. Index Awareness: Before the Professor performs a search, you provide the map. Use `list_available_sources` to show what subjects and titles are currently available.\n2. Subject Filtering: Help the Professor narrow their search by telling them exactly which 'subject' index contains the relevant data.\n\n### PHASE 3: DATABASE HYGIENE (DELETION PROTOCOL)\n1. Targeted Removal: If a user wants to remove a specific document, use `delete_source` with the exact Title.\n2. Bulk Purge: Use `delete_by_subject` ONLY when the user explicitly asks to wipe an entire category (e.g., 'Clear all my biology notes').\n3. Confirmation: Always confirm the number of chunks deleted to the user so they know the operation was successful.\n\n### MANDATE\n- Never 'hallucinate' a source. If a book isn't in the list, it doesn't exist.\n- You are technical and organized. Your tone is helpful, formal, and precise.",
     tools
   });
 }
@@ -31662,6 +31810,13 @@ function getTeachingTools(app) {
     new Dt({
       name: "search_obsidian_vault",
       description: "Searches the local Obsidian vault for relevant notes and concepts.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          query: { type: "STRING", description: "Search query or keyword to look for in the Vault." }
+        },
+        required: ["query"]
+      },
       execute: async (args) => {
         const query = (args.query || "").toLowerCase();
         const files = app.vault.getMarkdownFiles();
@@ -31680,6 +31835,13 @@ function getTeachingTools(app) {
     new Dt({
       name: "read_obsidian_note",
       description: "Reads the exact text of a specific Obsidian note by path.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          path: { type: "STRING", description: "Exact path to the markdown note in the Vault." }
+        },
+        required: ["path"]
+      },
       execute: async (args) => {
         const path = args.path;
         const exists = await app.vault.adapter.exists(path);
@@ -31691,6 +31853,14 @@ function getTeachingTools(app) {
     new Dt({
       name: "search_knowledge_base",
       description: "Searches the external library/knowledge base for documents.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          query: { type: "STRING", description: "Query to search in the library." },
+          subject_filter: { type: "STRING", description: "Optional subject category filter." }
+        },
+        required: ["query"]
+      },
       execute: async (args) => {
         const query = (args.query || "").toLowerCase();
         const exists = await app.vault.adapter.exists("DyResearch/Library");
@@ -31712,6 +31882,12 @@ function getTeachingTools(app) {
     new Dt({
       name: "get_obsidian_relations",
       description: "Finds related notes or backlinks to a specific concept in the Vault.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          title: { type: "STRING", description: "Title or concept to find relations for." }
+        }
+      },
       execute: async (args) => {
         return "Backlink mapping requires DataView or Obsidian API internal link caches (not implemented in this mock).";
       }
@@ -31725,14 +31901,8 @@ function createProfessorAgent(config, app) {
   return new cp({
     name: "professor_agent",
     model: config.model,
-    inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } },
     description: "The lead tutor and subject matter expert. Synthesizes user context with external RAG data.",
-    inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } },
-    systemInstruction: {
-      parts: [{
-        text: "You are the Professor of the DyResearch Team, the lead educator of this system. Your mission is to provide clear, accurate, and highly pedagogical explanations by combining the user's personal context with their library.\n\n### PHASE 1: INTERNAL WORKING MEMORY ENFORCEMENT (VAULT FIRST)\n1. Start at Home: Whenever a user asks a question, your absolute FIRST action must always be to search their local workspace using `search_obsidian_vault`.\n2. Analyze Current State: Use this initial search to identify what the user already knows, what specific concepts they are targeting, and their personal perspectives or current focus regarding the subject.\n3. Strategy Formation: Treat the findings from your vault search as your grounding context. If the user's notes already completely answer the prompt to a high pedagogical standard, you may jump directly to Phase 4.\n\n### PHASE 1.5: DEEP DIVE PROTOCOL (READING)\n1. Trigger: If a snippet returned by `search_obsidian_vault` is highly relevant but lacks sufficient detail to answer the user's question, do not guess or rely on internal knowledge.\n2. Action: Use the `read_obsidian_note` tool by providing the exact path discovered in the search results -> check the 'Use this path' line provided in the search results.\n3. Precision: You MUST use the exact path provided (e.g., 'Study Notes/File.md'). Do NOT pass just the filename. If you do not have the path, use 'list_obsidian_notes' to locate the file first.\n4. Integration: Once you have the full content, use it to ground your final pedagogical response.\n\n### PHASE 2: EXTERNAL EXPANSION PROTOCOL (KNOWLEDGE BASE SECOND)\n1. Target Gaps: If the user's personal notes leave open questions or require deep verification, use `search_knowledge_base` to query the global library.\n2. Smart Filtering: Use the context discovered in Phase 1 to craft highly optimized queries. If your vault search indicates the user is working on a specific theme (e.g. 'biology'), pass that index name into the `subject_filter` parameter of `search_knowledge_base`.\n3. Missing Data: If both the vault and the external library return absolutely no data on the topic, explicitly declare: 'I do not have information on this in your current workspace or library.' Avoid relying purely on your baseline internal training data for facts.\n\n### PHASE 3: GRAPH CONNECTIONS (CONTEXTUALIZATION)\n1. Relational Mapping: If your external vector search locates a highly relevant paper, map it back to the user's world by passing that document's metadata or title to the `get_obsidian_relations` tool.\n2. Synthesis Loop: Use graph relations to reveal how this new paper bridges back into critiques, authors, or related notes found in the user's local vault.\n\n### PHASE 4: TEACHING & COMPOSITION RULES\n1. Pedagogical Synthesis: Do not just copy-paste chunks. Synthesize them into a cohesive lesson using analogies and the Feynman technique.\n2. Mandatory Citations: You MUST include inline citations for every major claim. Use regular markdown for paper citations, but use [[Wikilinks]] when referencing notes originating from the user's local Obsidian Vault.\n3. Structural Clarity: Use rich Markdown (Headers, bolding, bullet points) so the NoteTaker has an impeccable layout to reference later.\n4. The Socratic Method: Unless the user explicitly asks for a swift, brief summary, end your lesson with a brief, thought-provoking question that naturally extends from their current research path."
-      }]
-    },
+    instruction: "You are the Professor of the DyResearch Team, the lead educator of this system. Your mission is to provide clear, accurate, and highly pedagogical explanations by combining the user's personal context with their library.\n\n### PHASE 1: INTERNAL WORKING MEMORY ENFORCEMENT (VAULT FIRST)\n1. Start at Home: Whenever a user asks a question, your absolute FIRST action must always be to search their local workspace using `search_obsidian_vault`.\n2. Analyze Current State: Use this initial search to identify what the user already knows, what specific concepts they are targeting, and their personal perspectives or current focus regarding the subject.\n3. Strategy Formation: Treat the findings from your vault search as your grounding context. If the user's notes already completely answer the prompt to a high pedagogical standard, you may jump directly to Phase 4.\n\n### PHASE 1.5: DEEP DIVE PROTOCOL (READING)\n1. Trigger: If a snippet returned by `search_obsidian_vault` is highly relevant but lacks sufficient detail to answer the user's question, do not guess or rely on internal knowledge.\n2. Action: Use the `read_obsidian_note` tool by providing the exact path discovered in the search results -> check the 'Use this path' line provided in the search results.\n3. Precision: You MUST use the exact path provided (e.g., 'Study Notes/File.md'). Do NOT pass just the filename. If you do not have the path, use 'list_obsidian_notes' to locate the file first.\n4. Integration: Once you have the full content, use it to ground your final pedagogical response.\n\n### PHASE 2: EXTERNAL EXPANSION PROTOCOL (KNOWLEDGE BASE SECOND)\n1. Target Gaps: If the user's personal notes leave open questions or require deep verification, use `search_knowledge_base` to query the global library.\n2. Smart Filtering: Use the context discovered in Phase 1 to craft highly optimized queries. If your vault search indicates the user is working on a specific theme (e.g. 'biology'), pass that index name into the `subject_filter` parameter of `search_knowledge_base`.\n3. Missing Data: If both the vault and the external library return absolutely no data on the topic, explicitly declare: 'I do not have information on this in your current workspace or library.' Avoid relying purely on your baseline internal training data for facts.\n\n### PHASE 3: GRAPH CONNECTIONS (CONTEXTUALIZATION)\n1. Relational Mapping: If your external vector search locates a highly relevant paper, map it back to the user's world by passing that document's metadata or title to the `get_obsidian_relations` tool.\n2. Synthesis Loop: Use graph relations to reveal how this new paper bridges back into critiques, authors, or related notes found in the user's local vault.\n\n### PHASE 4: TEACHING & COMPOSITION RULES\n1. Pedagogical Synthesis: Do not just copy-paste chunks. Synthesize them into a cohesive lesson using analogies and the Feynman technique.\n2. Mandatory Citations: You MUST include inline citations for every major claim. Use regular markdown for paper citations, but use [[Wikilinks]] when referencing notes originating from the user's local Obsidian Vault.\n3. Structural Clarity: Use rich Markdown (Headers, bolding, bullet points) so the NoteTaker has an impeccable layout to reference later.\n4. The Socratic Method: Unless the user explicitly asks for a swift, brief summary, end your lesson with a brief, thought-provoking question that naturally extends from their current research path.",
     tools
   });
 }
@@ -31744,6 +31914,13 @@ function getResearchTools(app) {
     new Dt({
       name: "web_search",
       description: "Performs a web search to find information online. Provide a query.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          query: { type: "STRING", description: "Search query." }
+        },
+        required: ["query"]
+      },
       execute: async (args) => {
         const query = args.query;
         if (!query)
@@ -31768,6 +31945,13 @@ Snippet: ${match[3]}
     new Dt({
       name: "scrape_website",
       description: "Scrapes the text content from a given URL.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          url: { type: "STRING", description: "Full URL of the webpage to scrape." }
+        },
+        required: ["url"]
+      },
       execute: async (args) => {
         const url = args.url;
         if (!url)
@@ -31787,6 +31971,13 @@ Snippet: ${match[3]}
     new Dt({
       name: "download_document",
       description: "Downloads a document (like a PDF) from a direct URL.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          url: { type: "STRING", description: "Direct URL to the document." }
+        },
+        required: ["url"]
+      },
       execute: async (args) => {
         const url = args.url;
         return `Downloaded document from ${url} (Mocked - binary download requires external PDF parser integration).`;
@@ -31801,14 +31992,8 @@ function createResearcherAgent(config, app) {
   return new cp({
     name: "researcher_agent",
     model: config.model,
-    inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } },
     description: "Web search and data acquisition specialist. Call this agent to search the internet, find alternative perspectives, scrape information from specific websites (like Arxiv or Reddit), or download PDFs and documents.",
-    inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } },
-    systemInstruction: {
-      parts: [{
-        text: "You are the Lead Researcher of the DyResearch Team. Your mission is to scour the internet for high-quality information, papers, and articles to expand the user's knowledge base.\n\n### PHASE 1: QUERY EXPANSION & SEARCH\n1. Lateral Thinking: Run multiple varied queries using `web_search` to ensure you get a broad perspective.\n2. Domain Scoping: Target your searches to high-quality domains based on the user's request (e.g., arxiv.org, wikipedia.org, medium.com).\n\n### PHASE 2: ACQUISITION (THE SCRAPER & DOWNLOADER)\n1. Static Files: If you find a direct link to a PDF or document, use `download_document`.\n2. Web Articles: If the information is on a standard webpage (like a blog or wiki), use `scrape_website` to read the content.\n3. Limit Reading: Do not attempt to scrape more than 3 URLs per request to save time.\n\n### PHASE 3: HANDOFF\nWhen you have extracted the text or downloaded the files, present your findings clearly. If you scraped a website, provide a brief summary of the text and offer to hand the full text over to the Librarian for ingestion. ALWAYS include the source URLs."
-      }]
-    },
+    instruction: "You are the Lead Researcher of the DyResearch Team. Your mission is to scour the internet for high-quality information, papers, and articles to expand the user's knowledge base.\n\n### PHASE 1: QUERY EXPANSION & SEARCH\n1. Lateral Thinking: Run multiple varied queries using `web_search` to ensure you get a broad perspective.\n2. Domain Scoping: Target your searches to high-quality domains based on the user's request (e.g., arxiv.org, wikipedia.org, medium.com).\n\n### PHASE 2: ACQUISITION (THE SCRAPER & DOWNLOADER)\n1. Static Files: If you find a direct link to a PDF or document, use `download_document`.\n2. Web Articles: If the information is on a standard webpage (like a blog or wiki), use `scrape_website` to read the content.\n3. Limit Reading: Do not attempt to scrape more than 3 URLs per request to save time.\n\n### PHASE 3: HANDOFF\nWhen you have extracted the text or downloaded the files, present your findings clearly. If you scraped a website, provide a brief summary of the text and offer to hand the full text over to the Librarian for ingestion. ALWAYS include the source URLs.",
     tools
   });
 }
@@ -31819,6 +32004,14 @@ function getNoteTakingTools(app) {
     new Dt({
       name: "create_obsidian_note",
       description: "Creates a new note in the Obsidian Vault. Provide title and content.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          title: { type: "STRING", description: "Title or relative path of the note." },
+          content: { type: "STRING", description: "Markdown content of the note." }
+        },
+        required: ["title", "content"]
+      },
       execute: async (args) => {
         const title = args.title || "Untitled Note";
         const content = args.content || "";
@@ -31833,6 +32026,15 @@ function getNoteTakingTools(app) {
     new Dt({
       name: "update_obsidian_note",
       description: 'Updates an existing note in the Obsidian Vault. mode="append" or "overwrite".',
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          path: { type: "STRING", description: "Path of the existing note." },
+          content: { type: "STRING", description: "Content to append or overwrite." },
+          mode: { type: "STRING", description: 'Update mode: "append" or "overwrite".' }
+        },
+        required: ["path", "content"]
+      },
       execute: async (args) => {
         const path = args.path;
         const content = args.content;
@@ -31854,6 +32056,13 @@ function getNoteTakingTools(app) {
     new Dt({
       name: "delete_obsidian_note",
       description: "Deletes a note from the Obsidian Vault by path.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          path: { type: "STRING", description: "Path of the note to delete." }
+        },
+        required: ["path"]
+      },
       execute: async (args) => {
         const path = args.path;
         if (!path)
@@ -31869,6 +32078,10 @@ function getNoteTakingTools(app) {
     new Dt({
       name: "list_obsidian_notes",
       description: "Lists all markdown notes available in the Obsidian Vault.",
+      parameters: {
+        type: "OBJECT",
+        properties: {}
+      },
       execute: async (args) => {
         const files = app.vault.getMarkdownFiles();
         return files.map((f7) => f7.path).join(", ");
@@ -31877,6 +32090,13 @@ function getNoteTakingTools(app) {
     new Dt({
       name: "read_obsidian_note",
       description: "Reads the exact text of a specific Obsidian note by path.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          path: { type: "STRING", description: "Path of the note to read." }
+        },
+        required: ["path"]
+      },
       execute: async (args) => {
         const path = args.path;
         if (!path)
@@ -31897,13 +32117,8 @@ function createNoteTakerAgent(config, app) {
   return new cp({
     name: "note_taking_agent",
     model: config.model,
-    inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } },
     description: "Specialist in Markdown formatting and Obsidian Vault management. Call this agent to transform research, summaries, or explanations into structured 'Evergreen' notes, handle file creation, manage backlinks, and organize the user's local knowledge base.",
-    systemInstruction: {
-      parts: [{
-        text: "You are the Lead NoteTaker and Vault Manager of the DyResearch Team. Your mission is to maintain a 'Second Brain' for the user by creating, organizing, and pruning 'Evergreen' notes in the Obsidian Vault.\n\n### 1. THE DISCOVERY PHASE (READ BEFORE WRITE)\n- Before creating a new note, ALWAYS use `list_obsidian_notes` to see if a note on the topic already exists.\n- If a note exists, use `read_obsidian_note` to ingest its current context. This prevents duplicates and ensures knowledge continuity.\n\n### 2. COMPOSITION & UPDATING RULES\n- **Atomic Knowledge:** Keep notes focused on a single concept. If a topic grows too large, split it into multiple linked files.\n- **Semantic Linking:** Heavily use [[Backlinks]] to connect new information to existing notes found during the Discovery Phase.\n- **Visuals & Callouts:** Use Mermaid.js for diagrams and Obsidian callouts (e.g., > [!ABSTRACT]) for high-level summaries.\n- **Intelligent Updating:** Use `update_obsidian_note`. Prefer 'append' for minor facts (adds a timestamped block) and 'overwrite' for structural reorganizations or rewrites.\n\n### 3. VAULT HYGIENE (PRUNING)\n- If the user indicates information is outdated, or if you identify two highly redundant notes, use `delete_obsidian_note` to maintain vault health.\n- Note: Deleting a file also triggers an automatic purge of those facts from the Librarian's vector memory.\n\n### 4. METADATA & FRONTMATTER\n- **New Notes:** When using `create_obsidian_note`, provide tags and a status field (e.g., #seed, #branch, #evergreen).\n- **Existing Notes:** When using `update_obsidian_note` in 'overwrite' mode, DO NOT provide the frontmatter; the tool will preserve the existing metadata for you."
-      }]
-    },
+    instruction: "You are the Lead NoteTaker and Vault Manager of the DyResearch Team. Your mission is to maintain a 'Second Brain' for the user by creating, organizing, and pruning 'Evergreen' notes in the Obsidian Vault.\n\n### 1. THE DISCOVERY PHASE (READ BEFORE WRITE)\n- Before creating a new note, ALWAYS use `list_obsidian_notes` to see if a note on the topic already exists.\n- If a note exists, use `read_obsidian_note` to ingest its current context. This prevents duplicates and ensures knowledge continuity.\n\n### 2. COMPOSITION & UPDATING RULES\n- **Atomic Knowledge:** Keep notes focused on a single concept. If a topic grows too large, split it into multiple linked files.\n- **Semantic Linking:** Heavily use [[Backlinks]] to connect new information to existing notes found during the Discovery Phase.\n- **Visuals & Callouts:** Use Mermaid.js for diagrams and Obsidian callouts (e.g., > [!ABSTRACT]) for high-level summaries.\n- **Intelligent Updating:** Use `update_obsidian_note`. Prefer 'append' for minor facts (adds a timestamped block) and 'overwrite' for structural reorganizations or rewrites.\n\n### 3. VAULT HYGIENE (PRUNING)\n- If the user indicates information is outdated, or if you identify two highly redundant notes, use `delete_obsidian_note` to maintain vault health.\n- Note: Deleting a file also triggers an automatic purge of those facts from the Librarian's vector memory.\n\n### 4. METADATA & FRONTMATTER\n- **New Notes:** When using `create_obsidian_note`, provide tags and a status field (e.g., #seed, #branch, #evergreen).\n- **Existing Notes:** When using `update_obsidian_note` in 'overwrite' mode, DO NOT provide the frontmatter; the tool will preserve the existing metadata for you.",
     tools
   });
 }
@@ -31959,6 +32174,13 @@ var DyResearchEngine = class {
       sessionService: this.sessionService
     });
   }
+  async ensureSession(sessionId) {
+    return await this.sessionService.getOrCreateSession({
+      appName: "dyresearch",
+      userId: "local-user",
+      sessionId
+    });
+  }
   async *sendMessage(sessionId, text) {
     if (!this.runner) {
       this.initialize();
@@ -31966,14 +32188,7 @@ var DyResearchEngine = class {
     if (!this.runner) {
       throw new Error("Engine not initialized");
     }
-    const existingSession = await this.sessionService.getSession({ appName: "dyresearch", sessionId });
-    if (!existingSession) {
-      await this.sessionService.createSession({
-        appName: "dyresearch",
-        userId: "local-user",
-        sessionId
-      });
-    }
+    await this.ensureSession(sessionId);
     const events = this.runner.runAsync({
       userId: "local-user",
       sessionId,
@@ -31987,12 +32202,7 @@ var DyResearchEngine = class {
     return await this.sessionService.listSessions({ appName: "dyresearch" });
   }
   async renameSession(oldSessionId, newSessionId) {
-    const oldPath = `DyResearch/Sessions/${oldSessionId}.json`;
-    const newPath = `DyResearch/Sessions/${newSessionId}.json`;
-    const exists = await this.app.vault.adapter.exists(oldPath);
-    if (exists) {
-      await this.app.vault.adapter.rename(oldPath, newPath);
-    }
+    await this.sessionService.renameSession(oldSessionId, newSessionId);
   }
   async ingestFile(file, metadata) {
     const MAX_SIZE = 5 * 1024 * 1024;

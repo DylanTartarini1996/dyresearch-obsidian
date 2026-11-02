@@ -14,11 +14,9 @@ export function createLibrarianAgent(config: AgentConfig, app: any): LlmAgent {
     return new LlmAgent({
         name: 'librarian_agent',
         model: config.model,
-        inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } } as any,
         description: "The system's archivist. Manages ingestion, metadata, and database hygiene.",
-        systemInstruction: {
-            parts: [{
-                text: "You are the Head Librarian of the DyResearch Team, the sole administrator of the Vector Knowledge Base. " +
+        instruction:
+            "You are the Head Librarian of the DyResearch Team, the sole administrator of the Vector Knowledge Base. " +
                       "Your mission is to ensure that all information is perfectly categorized, " +
                       "indexed by subject, and accurately retrievable for the Professor.\n\n" +
                       
@@ -38,9 +36,7 @@ export function createLibrarianAgent(config: AgentConfig, app: any): LlmAgent {
                       
                       "### MANDATE\n" +
                       "- Never 'hallucinate' a source. If a book isn't in the list, it doesn't exist.\n" +
-                      "- You are technical and organized. Your tone is helpful, formal, and precise."
-            }]
-        },
+                      "- You are technical and organized. Your tone is helpful, formal, and precise.",
         tools: tools
     });
 }

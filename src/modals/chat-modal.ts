@@ -183,20 +183,16 @@ export class ChatModal extends Modal {
         sessionTitle.style.order = "-100";
 
         try {
-            const session = await this.plugin.engine.sessionService.getSession({ appName: 'dyresearch', sessionId });
+            const session = await this.plugin.engine.ensureSession(sessionId);
             if (session && session.events) {
-                // VERY rudimentary event parsing for ADK events just to render past history
                 for (const evt of session.events) {
-                    let text = '';
-                    let role = '🤖 AI';
-                    
-                    // Hacky inspection of ADK event structure for UI rendering
-                    if ((evt as any).newMessage?.parts?.[0]?.text) {
-                        text = (evt as any).newMessage.parts[0].text;
-                        role = '👤 You';
-                    } else if ((evt as any).modelResponse?.parts?.[0]?.text) {
-                        text = (evt as any).modelResponse.parts[0].text;
-                    }
+                    const parts = (evt as any).content?.parts || (evt as any).newMessage?.parts || (evt as any).modelResponse?.parts || [];
+                    const text = parts
+                        .filter((p: any) => p?.text && !p?.thought)
+                        .map((p: any) => p.text)
+                        .join('')
+                        .trim();
+                    const role = (evt as any).author === 'user' || (evt as any).newMessage ? '👤 You' : '🤖 AI';
                     
                     if (text) {
                         const msgDiv = this.appendSimpleMessage(this.chatHistory, role, '');
@@ -265,20 +261,29 @@ export class ChatModal extends Modal {
                             let chunkText = "";
                             const parts = (chunk as any).content?.parts || (chunk as any).newMessage?.parts || (chunk as any).modelResponse?.parts || [];
                             for (const part of parts) {
-                                if (part.text) chunkText += part.text;
+                                if (part.text && !part.thought) chunkText += part.text;
                             }
                             if (!chunkText && (chunk as any).text) {
                                 chunkText = (chunk as any).text;
                             }
+
+                            const fnCall = parts.find((p: any) => p.functionCall)?.functionCall || (chunk as any).actions?.functionCalls?.[0];
+                            const transferTarget = (chunk as any).actions?.transferToAgent || (fnCall?.name === 'transfer_to_agent' ? fnCall.args?.agent_name : null);
 
                             if (chunkText) {
                                 fullAnswer += chunkText;
                                 ai.answerEl.empty();
                                 await MarkdownRenderer.render(this.app, fullAnswer, ai.answerEl, '', this.plugin);
                                 this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
-                            } else if ((chunk as any).actions?.functionCalls?.length > 0) {
-                                // Indicate that the agent is calling a tool
-                                const fnName = (chunk as any).actions.functionCalls[0].name;
+                            } else if ((chunk as any).errorMessage) {
+                                ai.answerEl.setText(`❌ Error: ${(chunk as any).errorMessage}`);
+                                this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
+                            } else if (transferTarget) {
+                                ai.answerEl.empty();
+                                await MarkdownRenderer.render(this.app, fullAnswer + `\n\n*🔄 Transferring to ${transferTarget}...*`, ai.answerEl, '', this.plugin);
+                                this.chatHistory.scrollTop = this.chatHistory.scrollHeight;
+                            } else if (fnCall) {
+                                const fnName = fnCall.name;
                                 ai.answerEl.empty();
                                 await MarkdownRenderer.render(this.app, fullAnswer + `\n\n*Working: ⚙️ Running ${fnName}...*`, ai.answerEl, '', this.plugin);
                                 this.chatHistory.scrollTop = this.chatHistory.scrollHeight;

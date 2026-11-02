@@ -6,6 +6,14 @@ export function getNoteTakingTools(app: App) {
         new FunctionTool({
             name: 'create_obsidian_note',
             description: 'Creates a new note in the Obsidian Vault. Provide title and content.',
+            parameters: {
+                type: 'OBJECT' as any,
+                properties: {
+                    title: { type: 'STRING' as any, description: 'Title or relative path of the note.' },
+                    content: { type: 'STRING' as any, description: 'Markdown content of the note.' }
+                },
+                required: ['title', 'content']
+            },
             execute: async (args: any) => {
                 const title = args.title || 'Untitled Note';
                 const content = args.content || '';
@@ -19,6 +27,15 @@ export function getNoteTakingTools(app: App) {
         new FunctionTool({
             name: 'update_obsidian_note',
             description: 'Updates an existing note in the Obsidian Vault. mode="append" or "overwrite".',
+            parameters: {
+                type: 'OBJECT' as any,
+                properties: {
+                    path: { type: 'STRING' as any, description: 'Path of the existing note.' },
+                    content: { type: 'STRING' as any, description: 'Content to append or overwrite.' },
+                    mode: { type: 'STRING' as any, description: 'Update mode: "append" or "overwrite".' }
+                },
+                required: ['path', 'content']
+            },
             execute: async (args: any) => {
                 const path = args.path;
                 const content = args.content;
@@ -41,6 +58,13 @@ export function getNoteTakingTools(app: App) {
         new FunctionTool({
             name: 'delete_obsidian_note',
             description: 'Deletes a note from the Obsidian Vault by path.',
+            parameters: {
+                type: 'OBJECT' as any,
+                properties: {
+                    path: { type: 'STRING' as any, description: 'Path of the note to delete.' }
+                },
+                required: ['path']
+            },
             execute: async (args: any) => {
                 const path = args.path;
                 if (!path) return "Error: path is required.";
@@ -55,6 +79,10 @@ export function getNoteTakingTools(app: App) {
         new FunctionTool({
             name: 'list_obsidian_notes',
             description: 'Lists all markdown notes available in the Obsidian Vault.',
+            parameters: {
+                type: 'OBJECT' as any,
+                properties: {}
+            },
             execute: async (args: any) => {
                 const files = app.vault.getMarkdownFiles();
                 return files.map(f => f.path).join(', ');
@@ -63,6 +91,13 @@ export function getNoteTakingTools(app: App) {
         new FunctionTool({
             name: 'read_obsidian_note',
             description: 'Reads the exact text of a specific Obsidian note by path.',
+            parameters: {
+                type: 'OBJECT' as any,
+                properties: {
+                    path: { type: 'STRING' as any, description: 'Path of the note to read.' }
+                },
+                required: ['path']
+            },
             execute: async (args: any) => {
                 const path = args.path;
                 if (!path) return "Error: path is required.";

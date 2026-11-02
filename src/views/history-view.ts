@@ -48,13 +48,14 @@ export class HistoryView extends ItemView {
         const buttonContainer = header.createDiv({ cls: 'history-buttons' });
         const newChatBtn = buttonContainer.createEl("button", { cls: 'dy-new-chat-btn' });
         setIcon(newChatBtn, 'plus');
-        newChatBtn.onClickEvent(() => {
+        newChatBtn.onClickEvent(async () => {
             this.plugin.currentSessionId = `obsidian_${Date.now()}`;
+            await this.plugin.engine.ensureSession(this.plugin.currentSessionId);
             this.plugin.openOrCreateChat();
             if (this.plugin.activeChatModal) {
-                this.plugin.activeChatModal.switchSession(this.plugin.currentSessionId);
+                await this.plugin.activeChatModal.switchSession(this.plugin.currentSessionId);
             }
-            this.refreshView();
+            await this.refreshView();
         });
 
         const searchContainer = container.createDiv({ cls: 'history-search-container' });

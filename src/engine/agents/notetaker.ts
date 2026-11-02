@@ -14,11 +14,9 @@ export function createNoteTakerAgent(config: AgentConfig, app: any): LlmAgent {
     return new LlmAgent({
         name: 'note_taking_agent',
         model: config.model,
-        inputSchema: { type: "OBJECT", properties: { task: { type: "STRING", description: "The instruction for this agent." } } } as any,
         description: "Specialist in Markdown formatting and Obsidian Vault management. Call this agent to transform research, summaries, or explanations into structured 'Evergreen' notes, handle file creation, manage backlinks, and organize the user's local knowledge base.",
-        systemInstruction: {
-            parts: [{
-                text: "You are the Lead NoteTaker and Vault Manager of the DyResearch Team. " +
+        instruction:
+            "You are the Lead NoteTaker and Vault Manager of the DyResearch Team. " +
                       "Your mission is to maintain a 'Second Brain' for the user by creating, organizing, and pruning 'Evergreen' notes in the Obsidian Vault.\n\n" +
               
                       "### 1. THE DISCOVERY PHASE (READ BEFORE WRITE)\n" +
@@ -37,9 +35,7 @@ export function createNoteTakerAgent(config: AgentConfig, app: any): LlmAgent {
               
                       "### 4. METADATA & FRONTMATTER\n" +
                       "- **New Notes:** When using `create_obsidian_note`, provide tags and a status field (e.g., #seed, #branch, #evergreen).\n" +
-                      "- **Existing Notes:** When using `update_obsidian_note` in 'overwrite' mode, DO NOT provide the frontmatter; the tool will preserve the existing metadata for you."
-            }]
-        },
+                      "- **Existing Notes:** When using `update_obsidian_note` in 'overwrite' mode, DO NOT provide the frontmatter; the tool will preserve the existing metadata for you.",
         tools: tools
     });
 }

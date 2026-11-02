@@ -6,6 +6,13 @@ export function getResearchTools(app: App) {
         new FunctionTool({
             name: 'web_search',
             description: 'Performs a web search to find information online. Provide a query.',
+            parameters: {
+                type: 'OBJECT' as any,
+                properties: {
+                    query: { type: 'STRING' as any, description: 'Search query.' }
+                },
+                required: ['query']
+            },
             execute: async (args: any) => {
                 const query = args.query;
                 if (!query) return "Error: query is required.";
@@ -28,6 +35,13 @@ export function getResearchTools(app: App) {
         new FunctionTool({
             name: 'scrape_website',
             description: 'Scrapes the text content from a given URL.',
+            parameters: {
+                type: 'OBJECT' as any,
+                properties: {
+                    url: { type: 'STRING' as any, description: 'Full URL of the webpage to scrape.' }
+                },
+                required: ['url']
+            },
             execute: async (args: any) => {
                 const url = args.url;
                 if (!url) return "Error: url is required.";
@@ -47,6 +61,13 @@ export function getResearchTools(app: App) {
         new FunctionTool({
             name: 'download_document',
             description: 'Downloads a document (like a PDF) from a direct URL.',
+            parameters: {
+                type: 'OBJECT' as any,
+                properties: {
+                    url: { type: 'STRING' as any, description: 'Direct URL to the document.' }
+                },
+                required: ['url']
+            },
             execute: async (args: any) => {
                 const url = args.url;
                 return `Downloaded document from ${url} (Mocked - binary download requires external PDF parser integration).`;
