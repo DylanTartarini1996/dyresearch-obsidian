@@ -1,5 +1,7 @@
 node_modules
 dist
+screens
+data.json
 
 # Compiled class file
 *.class
