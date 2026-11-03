@@ -102,7 +102,7 @@ DyResearch is built entirely using Obsidian's public `app.vault`, `app.vault.ada
 
 ```bash
 # Clone into your vault plugins directory
-git clone https://github.com/dylantartarini/dyresearch-obsidian.git
+git clone https://github.com/DylanTartarini1996/dyresearch-obsidian
 cd dyresearch-obsidian
 
 # Install dependencies
@@ -119,7 +119,3 @@ npm run build
 ```
 
 ---
-
-## 📄 License
-
-MIT License © 2026 Dylan Tartarini

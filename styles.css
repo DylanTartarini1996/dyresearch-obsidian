@@ -21,8 +21,8 @@
 }
 
 /* Always hide Obsidian's default floating close button to avoid duplicate 'X' buttons */
-.modal.dy-chat-modal-parent .modal-close-button {
-    display: none !important;
+.modal.dy-chat-modal-parent > .modal-close-button {
+    display: none;
 }
 
 /* Header Container for drag zone and action buttons */
@@ -448,9 +448,9 @@
     color: var(--text-normal);
 }
 
-.dy-tab-btn.is-active-tab {
-    background-color: var(--interactive-accent) !important;
-    color: var(--text-on-accent) !important;
+.dy-nav-tabs .dy-tab-btn.is-active-tab {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 }
 
@@ -676,17 +676,17 @@
     outline: none;
 }
 
-.hidden-file-input {
-    display: none !important;
+input[type="file"].hidden-file-input {
+    display: none;
 }
 
-.dy-upload-btn {
+.upload-section .dy-upload-btn {
     width: 100%;
     padding: 8px 12px;
     border-radius: 6px;
     border: none;
-    background-color: var(--interactive-accent) !important;
-    color: var(--text-on-accent) !important;
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
     font-weight: 600;
     font-size: var(--font-ui-small);
     cursor: pointer;
@@ -696,8 +696,8 @@
     gap: 6px;
 }
 
-.dy-upload-btn:hover:not(:disabled) {
-    background-color: var(--interactive-accent-hover) !important;
+.upload-section .dy-upload-btn:hover:not(:disabled) {
+    background-color: var(--interactive-accent-hover);
 }
 
 .library-container {
