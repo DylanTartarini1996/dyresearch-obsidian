@@ -26,7 +26,7 @@ __export(main_exports, {
   default: () => DyResearchPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -59,20 +59,52 @@ var DyResearchSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.apiKeys.anthropic = val;
       await this.plugin.saveSettings();
     }));
+    new import_obsidian.Setting(containerEl).setName("OpenRouter API Key").setDesc("Supports free & paid models on openrouter.ai (e.g. meta-llama/llama-3.3-70b-instruct:free)").addText((text) => text.setPlaceholder("sk-or-v1-...").setValue(this.plugin.settings.apiKeys.openrouter || "").onChange(async (val) => {
+      this.plugin.settings.apiKeys.openrouter = val;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Groq API Key").setDesc("Fast inference with free tier on console.groq.com (e.g. llama-3.3-70b-versatile)").addText((text) => text.setPlaceholder("gsk_...").setValue(this.plugin.settings.apiKeys.groq || "").onChange(async (val) => {
+      this.plugin.settings.apiKeys.groq = val;
+      await this.plugin.saveSettings();
+    }));
     containerEl.createEl("h3", { text: "Agent Configurations" });
     const agents = ["coordinator", "professor", "librarian", "researcher", "notetaker"];
     agents.forEach((agentName) => {
       const agentCfg = this.plugin.settings.agents[agentName];
       const details = containerEl.createEl("details");
       details.createEl("summary", { text: `Settings for ${agentName.toUpperCase()}` });
-      new import_obsidian.Setting(details).setName("Provider").addDropdown((d) => d.addOptions({ "gemini": "Google Gemini", "openai": "OpenAI", "anthropic": "Anthropic" }).setValue(agentCfg.provider).onChange(async (v) => {
+      let modelInputRef = null;
+      const defaultModelByProvider = {
+        gemini: "gemini-2.5-flash",
+        openai: "gpt-4o",
+        anthropic: "claude-sonnet-4-20250514",
+        openrouter: "meta-llama/llama-3.3-70b-instruct:free",
+        groq: "llama-3.3-70b-versatile"
+      };
+      new import_obsidian.Setting(details).setName("Provider").addDropdown((d) => d.addOptions({
+        "gemini": "Google Gemini",
+        "openai": "OpenAI",
+        "anthropic": "Anthropic",
+        "openrouter": "OpenRouter",
+        "groq": "Groq"
+      }).setValue(agentCfg.provider).onChange(async (v) => {
+        const prevDefault = defaultModelByProvider[agentCfg.provider];
         agentCfg.provider = v;
+        if (!agentCfg.model || agentCfg.model === prevDefault) {
+          agentCfg.model = defaultModelByProvider[v] || "gemini-2.5-flash";
+          if (modelInputRef) {
+            modelInputRef.setValue(agentCfg.model);
+          }
+        }
         await this.plugin.saveSettings();
       }));
-      new import_obsidian.Setting(details).setName("Model").addText((t) => t.setValue(agentCfg.model).onChange(async (v) => {
-        agentCfg.model = v;
-        await this.plugin.saveSettings();
-      }));
+      new import_obsidian.Setting(details).setName("Model").setDesc("e.g. gemini-2.5-flash, gpt-4o, claude-sonnet-4-20250514, llama-3.3-70b-versatile").addText((t) => {
+        modelInputRef = t;
+        t.setValue(agentCfg.model).onChange(async (v) => {
+          agentCfg.model = v;
+          await this.plugin.saveSettings();
+        });
+      });
     });
   }
 };
@@ -1732,19 +1764,21 @@ var DEFAULT_SETTINGS = {
   apiKeys: {
     gemini: "",
     openai: "",
-    anthropic: ""
+    anthropic: "",
+    openrouter: "",
+    groq: ""
   },
   agents: {
-    coordinator: { provider: "gemini", model: "gemini-3.8-flash" },
-    professor: { provider: "gemini", model: "gemini-3.8-flash" },
-    librarian: { provider: "gemini", model: "gemini-3.8-flash" },
-    researcher: { provider: "gemini", model: "gemini-3.8-flash" },
-    notetaker: { provider: "gemini", model: "gemini-3.8-flash" }
+    coordinator: { provider: "gemini", model: "gemini-2.5-flash" },
+    professor: { provider: "gemini", model: "gemini-2.5-flash" },
+    librarian: { provider: "gemini", model: "gemini-2.5-flash" },
+    researcher: { provider: "gemini", model: "gemini-2.5-flash" },
+    notetaker: { provider: "gemini", model: "gemini-2.5-flash" }
   }
 };
 
 // src/engine/engine.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // node_modules/@google/adk/dist/web/index_web.js
 var gF = Object.create;
@@ -32903,6 +32937,461 @@ var ObsidianSessionService = class extends Du {
   }
 };
 
+// src/engine/llm-providers.ts
+var import_obsidian5 = require("obsidian");
+function toStandardJsonSchema(schema) {
+  if (!schema || typeof schema !== "object") {
+    return { type: "object", properties: {} };
+  }
+  const result = {};
+  const rawType = typeof schema.type === "string" ? schema.type.toLowerCase() : "object";
+  result.type = rawType;
+  if (schema.description) {
+    result.description = schema.description;
+  }
+  if (Array.isArray(schema.enum)) {
+    result.enum = schema.enum;
+  }
+  if (rawType === "object") {
+    const props = {};
+    if (schema.properties && typeof schema.properties === "object") {
+      for (const [k, v] of Object.entries(schema.properties)) {
+        props[k] = toStandardJsonSchema(v);
+      }
+    }
+    result.properties = props;
+    if (Array.isArray(schema.required) && schema.required.length > 0) {
+      result.required = schema.required;
+    }
+  } else if (rawType === "array") {
+    result.items = schema.items ? toStandardJsonSchema(schema.items) : { type: "string" };
+  }
+  return result;
+}
+function extractSystemInstructionText(llmRequest) {
+  const sys = llmRequest.config?.systemInstruction;
+  if (!sys)
+    return "";
+  if (typeof sys === "string")
+    return sys;
+  if (Array.isArray(sys)) {
+    return sys.map((part) => typeof part === "string" ? part : part?.text || "").filter(Boolean).join("\n\n");
+  }
+  if (typeof sys === "object" && Array.isArray(sys.parts)) {
+    return sys.parts.map((p) => p?.text || "").filter(Boolean).join("\n\n");
+  }
+  return "";
+}
+function extractFunctionDeclarations(llmRequest) {
+  const tools = llmRequest.config?.tools || [];
+  const decls = [];
+  for (const toolGroup of tools) {
+    const fnDecls = toolGroup?.functionDeclarations;
+    if (Array.isArray(fnDecls)) {
+      for (const fn2 of fnDecls) {
+        if (fn2?.name) {
+          decls.push({
+            name: fn2.name,
+            description: fn2.description || "",
+            parameters: toStandardJsonSchema(fn2.parameters)
+          });
+        }
+      }
+    }
+  }
+  return decls;
+}
+function sanitizeToolCallId(id2, fallbackIdx) {
+  const raw = (id2 || `call_${fallbackIdx}`).replace(/[^a-zA-Z0-9_-]/g, "_");
+  return raw.slice(0, 64) || `call_${fallbackIdx}`;
+}
+var OpenAiLlm = class extends Yn {
+  apiKey;
+  baseUrl;
+  providerLabel;
+  extraHeaders;
+  static supportedModels = [
+    /^gpt-.*/,
+    /^o1.*/,
+    /^o3.*/,
+    /^o4.*/,
+    /^chatgpt-.*/,
+    /^llama-.*/,
+    /^mixtral-.*/,
+    /^gemma.*/,
+    /^qwen.*/,
+    /^deepseek.*/,
+    /.*\/.*/
+  ];
+  constructor({
+    model,
+    apiKey,
+    baseUrl,
+    providerLabel,
+    extraHeaders
+  }) {
+    super({ model: model || "gpt-4o" });
+    this.apiKey = apiKey || "";
+    this.baseUrl = (baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+    this.providerLabel = providerLabel || "OpenAI";
+    this.extraHeaders = extraHeaders || {};
+  }
+  async *generateContentAsync(llmRequest, _stream = false, _abortSignal) {
+    if (!this.apiKey) {
+      yield {
+        errorCode: "MISSING_API_KEY",
+        errorMessage: `${this.providerLabel} API key is not configured. Please add it in DyResearch Settings.`
+      };
+      return;
+    }
+    this.maybeAppendUserContent(llmRequest);
+    const messages = [];
+    const sysText = extractSystemInstructionText(llmRequest);
+    if (sysText) {
+      messages.push({ role: "system", content: sysText });
+    }
+    let callCounter = 1;
+    const pendingCallIdsByName = /* @__PURE__ */ new Map();
+    for (const content of llmRequest.contents || []) {
+      const role = content.role === "model" ? "assistant" : "user";
+      const parts = content.parts || [];
+      const textSegments = [];
+      const toolCalls = [];
+      const toolResponses = [];
+      for (const part of parts) {
+        if (part?.text && !part?.thought) {
+          textSegments.push(part.text);
+        }
+        if (part?.functionCall) {
+          const fc2 = part.functionCall;
+          const callId = sanitizeToolCallId(fc2.id, callCounter++);
+          const queue = pendingCallIdsByName.get(fc2.name) || [];
+          queue.push(callId);
+          pendingCallIdsByName.set(fc2.name, queue);
+          toolCalls.push({
+            id: callId,
+            type: "function",
+            function: {
+              name: fc2.name,
+              arguments: JSON.stringify(fc2.args || {})
+            }
+          });
+        }
+        if (part?.functionResponse) {
+          const fr2 = part.functionResponse;
+          const queue = pendingCallIdsByName.get(fr2.name) || [];
+          const matchedId = fr2.id ? sanitizeToolCallId(fr2.id, callCounter++) : queue.shift() || sanitizeToolCallId(void 0, callCounter++);
+          const responsePayload = fr2.response !== void 0 ? fr2.response : {};
+          toolResponses.push({
+            role: "tool",
+            tool_call_id: matchedId,
+            content: typeof responsePayload === "string" ? responsePayload : JSON.stringify(responsePayload)
+          });
+        }
+      }
+      if (toolCalls.length > 0) {
+        messages.push({
+          role: "assistant",
+          content: textSegments.length > 0 ? textSegments.join("\n") : null,
+          tool_calls: toolCalls
+        });
+      } else if (textSegments.length > 0) {
+        messages.push({
+          role,
+          content: textSegments.join("\n")
+        });
+      }
+      for (const tr2 of toolResponses) {
+        messages.push(tr2);
+      }
+    }
+    const fnDecls = extractFunctionDeclarations(llmRequest);
+    const tools = fnDecls.map((fn2) => ({
+      type: "function",
+      function: {
+        name: fn2.name,
+        description: fn2.description,
+        parameters: fn2.parameters
+      }
+    }));
+    const body = {
+      model: llmRequest.model || this.model,
+      messages
+    };
+    if (tools.length > 0) {
+      body.tools = tools;
+    }
+    try {
+      const response = await (0, import_obsidian5.requestUrl)({
+        url: `${this.baseUrl}/chat/completions`,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.apiKey}`,
+          ...this.extraHeaders
+        },
+        body: JSON.stringify(body),
+        throw: false
+      });
+      if (response.status >= 400) {
+        const errMsg = response.json?.error?.message || response.text || `HTTP ${response.status}`;
+        yield {
+          errorCode: `${this.providerLabel.toUpperCase()}_${response.status}`,
+          errorMessage: `${this.providerLabel} API Error: ${errMsg}`
+        };
+        return;
+      }
+      const data = response.json;
+      const choice = data?.choices?.[0];
+      const msg = choice?.message;
+      const outParts = [];
+      if (msg?.content && typeof msg.content === "string" && msg.content.trim()) {
+        outParts.push({ text: msg.content });
+      }
+      if (Array.isArray(msg?.tool_calls)) {
+        for (const tc3 of msg.tool_calls) {
+          if (tc3?.function?.name) {
+            let parsedArgs = {};
+            try {
+              parsedArgs = tc3.function.arguments ? JSON.parse(tc3.function.arguments) : {};
+            } catch {
+              parsedArgs = {};
+            }
+            outParts.push({
+              functionCall: {
+                id: tc3.id || `call_${Date.now()}`,
+                name: tc3.function.name,
+                args: parsedArgs
+              }
+            });
+          }
+        }
+      }
+      if (outParts.length === 0) {
+        outParts.push({ text: "" });
+      }
+      yield {
+        content: {
+          role: "model",
+          parts: outParts
+        },
+        finishReason: "STOP"
+      };
+    } catch (err) {
+      yield {
+        errorCode: "OPENAI_NETWORK_ERROR",
+        errorMessage: err?.message || String(err)
+      };
+    }
+  }
+  async connect(_llmRequest) {
+    throw new Error("Live bidirectional streaming is not supported on OpenAiLlm.");
+  }
+};
+var AnthropicLlm = class extends Yn {
+  apiKey;
+  baseUrl;
+  static supportedModels = [
+    /^claude-.*/
+  ];
+  constructor({ model, apiKey, baseUrl }) {
+    super({ model: model || "claude-sonnet-4-20250514" });
+    this.apiKey = apiKey || "";
+    this.baseUrl = (baseUrl || "https://api.anthropic.com/v1").replace(/\/+$/, "");
+  }
+  async *generateContentAsync(llmRequest, _stream = false, _abortSignal) {
+    if (!this.apiKey) {
+      yield {
+        errorCode: "MISSING_API_KEY",
+        errorMessage: "Anthropic API key is not configured. Please add it in DyResearch Settings."
+      };
+      return;
+    }
+    this.maybeAppendUserContent(llmRequest);
+    const sysText = extractSystemInstructionText(llmRequest);
+    const rawMessages = [];
+    let callCounter = 1;
+    const pendingCallIdsByName = /* @__PURE__ */ new Map();
+    for (const content of llmRequest.contents || []) {
+      const parts = content.parts || [];
+      const assistantBlocks = [];
+      const userBlocks = [];
+      for (const part of parts) {
+        if (part?.text && !part?.thought) {
+          if (content.role === "model") {
+            assistantBlocks.push({ type: "text", text: part.text });
+          } else {
+            userBlocks.push({ type: "text", text: part.text });
+          }
+        }
+        if (part?.functionCall) {
+          const fc2 = part.functionCall;
+          const callId = sanitizeToolCallId(fc2.id, callCounter++);
+          const queue = pendingCallIdsByName.get(fc2.name) || [];
+          queue.push(callId);
+          pendingCallIdsByName.set(fc2.name, queue);
+          assistantBlocks.push({
+            type: "tool_use",
+            id: callId,
+            name: fc2.name,
+            input: fc2.args && typeof fc2.args === "object" ? fc2.args : {}
+          });
+        }
+        if (part?.functionResponse) {
+          const fr2 = part.functionResponse;
+          const queue = pendingCallIdsByName.get(fr2.name) || [];
+          const matchedId = fr2.id ? sanitizeToolCallId(fr2.id, callCounter++) : queue.shift() || sanitizeToolCallId(void 0, callCounter++);
+          const responsePayload = fr2.response !== void 0 ? fr2.response : {};
+          const resultText = typeof responsePayload === "string" ? responsePayload : JSON.stringify(responsePayload);
+          userBlocks.push({
+            type: "tool_result",
+            tool_use_id: matchedId,
+            content: resultText || "OK"
+          });
+        }
+      }
+      if (assistantBlocks.length > 0) {
+        rawMessages.push({ role: "assistant", content: assistantBlocks });
+      }
+      if (userBlocks.length > 0) {
+        rawMessages.push({ role: "user", content: userBlocks });
+      }
+    }
+    const mergedMessages = [];
+    for (const msg of rawMessages) {
+      const prev = mergedMessages[mergedMessages.length - 1];
+      if (prev && prev.role === msg.role) {
+        prev.content.push(...msg.content);
+      } else {
+        mergedMessages.push({ role: msg.role, content: [...msg.content] });
+      }
+    }
+    if (mergedMessages.length === 0 || mergedMessages[0].role !== "user") {
+      mergedMessages.unshift({
+        role: "user",
+        content: [{ type: "text", text: "Please proceed according to the instructions." }]
+      });
+    }
+    const fnDecls = extractFunctionDeclarations(llmRequest);
+    const tools = fnDecls.map((fn2) => ({
+      name: fn2.name,
+      description: fn2.description,
+      input_schema: fn2.parameters
+    }));
+    const body = {
+      model: llmRequest.model || this.model,
+      max_tokens: 4096,
+      messages: mergedMessages
+    };
+    if (sysText) {
+      body.system = sysText;
+    }
+    if (tools.length > 0) {
+      body.tools = tools;
+    }
+    try {
+      const response = await (0, import_obsidian5.requestUrl)({
+        url: `${this.baseUrl}/messages`,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": this.apiKey,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify(body),
+        throw: false
+      });
+      if (response.status >= 400) {
+        const errMsg = response.json?.error?.message || response.text || `HTTP ${response.status}`;
+        yield {
+          errorCode: `ANTHROPIC_${response.status}`,
+          errorMessage: `Anthropic API Error: ${errMsg}`
+        };
+        return;
+      }
+      const data = response.json;
+      const outParts = [];
+      if (Array.isArray(data?.content)) {
+        for (const block of data.content) {
+          if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+            outParts.push({ text: block.text });
+          } else if (block?.type === "tool_use" && block.name) {
+            outParts.push({
+              functionCall: {
+                id: block.id || `call_${Date.now()}`,
+                name: block.name,
+                args: block.input && typeof block.input === "object" ? block.input : {}
+              }
+            });
+          }
+        }
+      }
+      if (outParts.length === 0) {
+        outParts.push({ text: "" });
+      }
+      yield {
+        content: {
+          role: "model",
+          parts: outParts
+        },
+        finishReason: "STOP"
+      };
+    } catch (err) {
+      yield {
+        errorCode: "ANTHROPIC_NETWORK_ERROR",
+        errorMessage: err?.message || String(err)
+      };
+    }
+  }
+  async connect(_llmRequest) {
+    throw new Error("Live bidirectional streaming is not supported on AnthropicLlm.");
+  }
+};
+Or.register(OpenAiLlm);
+Or.register(AnthropicLlm);
+function createConfiguredLlm(provider, model, apiKey) {
+  const cleanProvider = (provider || "gemini").toLowerCase().trim();
+  const cleanModel = (model || "").trim();
+  if (cleanProvider === "openrouter") {
+    return new OpenAiLlm({
+      model: cleanModel || "meta-llama/llama-3.3-70b-instruct:free",
+      apiKey,
+      baseUrl: "https://openrouter.ai/api/v1",
+      providerLabel: "OpenRouter",
+      extraHeaders: {
+        "HTTP-Referer": "https://obsidian.md",
+        "X-Title": "DyResearch Obsidian"
+      }
+    });
+  }
+  if (cleanProvider === "groq") {
+    return new OpenAiLlm({
+      model: cleanModel || "llama-3.3-70b-versatile",
+      apiKey,
+      baseUrl: "https://api.groq.com/openai/v1",
+      providerLabel: "Groq"
+    });
+  }
+  if (cleanProvider === "openai" || /^(gpt-|o1|o3|o4|chatgpt-)/i.test(cleanModel)) {
+    return new OpenAiLlm({
+      model: cleanModel || "gpt-4o",
+      apiKey,
+      baseUrl: "https://api.openai.com/v1",
+      providerLabel: "OpenAI"
+    });
+  }
+  if (cleanProvider === "anthropic" || /^claude-/i.test(cleanModel)) {
+    return new AnthropicLlm({
+      model: cleanModel || "claude-sonnet-4-20250514",
+      apiKey
+    });
+  }
+  return new uo({
+    model: cleanModel || "gemini-2.5-flash",
+    apiKey
+  });
+}
+
 // src/engine/agents/coordinator.ts
 function createCoordinatorAgent(config, subAgents) {
   return new cp({
@@ -33483,7 +33972,7 @@ function createProfessorAgent(config, app) {
 }
 
 // src/engine/tools/search.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 function getResearchTools(app) {
   return [
     new Dt({
@@ -33501,7 +33990,7 @@ function getResearchTools(app) {
         if (!query)
           return "Error: query is required.";
         try {
-          const response = await (0, import_obsidian5.requestUrl)(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`);
+          const response = await (0, import_obsidian6.requestUrl)(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`);
           const text = response.text;
           const results = [];
           const matches = text.matchAll(/<a class="result-url" href="([^"]+)">([^<]+)<\/a>.*?<td class="result-snippet">([^<]+)<\/td>/gs);
@@ -33532,7 +34021,7 @@ Snippet: ${match[3]}
         if (!url)
           return "Error: url is required.";
         try {
-          const response = await (0, import_obsidian5.requestUrl)(url);
+          const response = await (0, import_obsidian6.requestUrl)(url);
           let text = response.text.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
           text = text.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "");
           text = text.replace(/<[^>]+>/g, " ");
@@ -33565,7 +34054,7 @@ Snippet: ${match[3]}
           targetUrl = `https://arxiv.org/pdf/${arxivAbsMatch[1]}.pdf`;
         }
         try {
-          const response = await (0, import_obsidian5.requestUrl)({ url: targetUrl, method: "GET" });
+          const response = await (0, import_obsidian6.requestUrl)({ url: targetUrl, method: "GET" });
           const buffer = response.arrayBuffer;
           if (!buffer || buffer.byteLength === 0) {
             return `Error: Downloaded empty response from ${targetUrl}`;
@@ -33918,10 +34407,11 @@ var DyResearchEngine = class {
   initialize() {
     const getApiKey = (provider) => this.plugin.settings.apiKeys[provider];
     const getModel = (config) => {
-      if (config.provider === "gemini") {
-        return new uo({ model: config.model, apiKey: getApiKey(config.provider) });
-      }
-      return config.model;
+      return createConfiguredLlm(
+        config.provider,
+        config.model,
+        getApiKey(config.provider)
+      );
     };
     const librarian = createLibrarianAgent({
       model: getModel(this.plugin.settings.agents.librarian),
@@ -34002,7 +34492,7 @@ var DyResearchEngine = class {
     });
     onProgress?.(`\u{1F916} Indexing "${saved.title}" with Librarian...`);
     await this.autoIndexUploadedDocument(saved, docKind, topicHint);
-    new import_obsidian6.Notice(`Indexed ${docKind} "${saved.title}" into Library & Library Index!`);
+    new import_obsidian7.Notice(`Indexed ${docKind} "${saved.title}" into Library & Library Index!`);
   }
   async autoIndexUploadedDocument(saved, docKind, topicHint) {
     const taxonomy = await getExistingLibraryTaxonomy(this.app);
@@ -34076,7 +34566,7 @@ var DyResearchEngine = class {
 };
 
 // src/main.ts
-var DyResearchPlugin = class extends import_obsidian7.Plugin {
+var DyResearchPlugin = class extends import_obsidian8.Plugin {
   currentSessionId = `obsidian_${Date.now()}`;
   userId = "dyresearch_plugin_user";
   settings;
@@ -34182,7 +34672,10 @@ var DyResearchPlugin = class extends import_obsidian7.Plugin {
     }
   }
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loaded = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    this.settings.apiKeys = Object.assign({}, DEFAULT_SETTINGS.apiKeys, loaded?.apiKeys);
+    this.settings.agents = Object.assign({}, DEFAULT_SETTINGS.agents, loaded?.agents);
   }
   async saveSettings() {
     await this.saveData(this.settings);

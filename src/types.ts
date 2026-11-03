@@ -1,5 +1,5 @@
 export interface AgentModelConfig {
-    provider: 'gemini' | 'openai' | 'anthropic' | string;
+    provider: 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'groq' | string;
     model: string;
 }
 
@@ -7,6 +7,8 @@ export interface ApiKeys {
     gemini: string;
     openai: string;
     anthropic: string;
+    openrouter: string;
+    groq: string;
 }
 
 export interface DyResearchSettings {
@@ -30,13 +32,15 @@ export const DEFAULT_SETTINGS: DyResearchSettings = {
     apiKeys: {
         gemini: '',
         openai: '',
-        anthropic: ''
+        anthropic: '',
+        openrouter: '',
+        groq: ''
     },
     agents: {
-        coordinator: { provider: 'gemini', model: 'gemini-3.8-flash' },
-        professor: { provider: 'gemini', model: 'gemini-3.8-flash' },
-        librarian: { provider: 'gemini', model: 'gemini-3.8-flash' },
-        researcher: { provider: 'gemini', model: 'gemini-3.8-flash' },
-        notetaker: { provider: 'gemini', model: 'gemini-3.8-flash' }
+        coordinator: { provider: 'gemini', model: 'gemini-2.5-flash' },
+        professor: { provider: 'gemini', model: 'gemini-2.5-flash' },
+        librarian: { provider: 'gemini', model: 'gemini-2.5-flash' },
+        researcher: { provider: 'gemini', model: 'gemini-2.5-flash' },
+        notetaker: { provider: 'gemini', model: 'gemini-2.5-flash' }
     }
 };

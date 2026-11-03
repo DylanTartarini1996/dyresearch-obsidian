@@ -124,7 +124,10 @@ export default class DyResearchPlugin extends Plugin {
     }
 
     async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        const loaded = await this.loadData();
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+        this.settings.apiKeys = Object.assign({}, DEFAULT_SETTINGS.apiKeys, loaded?.apiKeys);
+        this.settings.agents = Object.assign({}, DEFAULT_SETTINGS.agents, loaded?.agents);
     }
 
     async saveSettings() {

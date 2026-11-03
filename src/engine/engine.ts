@@ -1,6 +1,7 @@
 import { App, Notice } from 'obsidian';
-import { Runner, Event, Gemini } from '@google/adk';
+import { Runner, Event } from '@google/adk';
 import { ObsidianSessionService } from './session-service';
+import { createConfiguredLlm } from './llm-providers';
 import { createCoordinatorAgent } from './agents/coordinator';
 import { createLibrarianAgent } from './agents/librarian';
 import { createProfessorAgent } from './agents/professor';
@@ -32,10 +33,11 @@ export class DyResearchEngine {
         const getApiKey = (provider: string) => this.plugin.settings.apiKeys[provider as keyof typeof this.plugin.settings.apiKeys];
 
         const getModel = (config: any) => {
-            if (config.provider === 'gemini') {
-                return new Gemini({ model: config.model, apiKey: getApiKey(config.provider) });
-            }
-            return config.model;
+            return createConfiguredLlm(
+                config.provider,
+                config.model,
+                getApiKey(config.provider)
+            );
         };
 
         const librarian = createLibrarianAgent({

@@ -11,6 +11,7 @@ import {
 import { getLibrarianTools } from './src/engine/tools/library';
 import { getTeachingTools } from './src/engine/tools/teaching';
 import { getNoteTakingTools, sanitizeMermaidBlocks } from './src/engine/tools/notes';
+import { createConfiguredLlm, OpenAiLlm, AnthropicLlm, toStandardJsonSchema } from './src/engine/llm-providers';
 
 const files = new Map<string, string>();
 const binaryFiles = new Map<string, ArrayBuffer>();
@@ -258,5 +259,37 @@ const mockPlugin = {
     assert.ok(overwrittenNote.includes('  - deep-learning'));
     assert.ok(overwrittenNote.includes('# Updated Transformer Note'));
 
-    console.log("All PDF download, Library organization, author deduplication, Mermaid sanitization, and Library Index reading checks passed!");
+    // Test multi-provider LLM support (OpenAI, Anthropic, and schema conversion)
+    const openaiModel = createConfiguredLlm('openai', 'gpt-4o', 'sk-test-openai');
+    assert.ok(openaiModel instanceof OpenAiLlm);
+    assert.strictEqual(openaiModel.model, 'gpt-4o');
+
+    const anthropicModel = createConfiguredLlm('anthropic', 'claude-sonnet-4-20250514', 'sk-ant-test');
+    assert.ok(anthropicModel instanceof AnthropicLlm);
+    assert.strictEqual(anthropicModel.model, 'claude-sonnet-4-20250514');
+
+    const openRouterModel = createConfiguredLlm('openrouter', 'meta-llama/llama-3.3-70b-instruct:free', 'sk-or-test');
+    assert.ok(openRouterModel instanceof OpenAiLlm);
+    assert.strictEqual(openRouterModel.baseUrl, 'https://openrouter.ai/api/v1');
+    assert.strictEqual(openRouterModel.providerLabel, 'OpenRouter');
+
+    const groqModel = createConfiguredLlm('groq', 'llama-3.3-70b-versatile', 'gsk-test');
+    assert.ok(groqModel instanceof OpenAiLlm);
+    assert.strictEqual(groqModel.baseUrl, 'https://api.groq.com/openai/v1');
+    assert.strictEqual(groqModel.providerLabel, 'Groq');
+
+    const convertedSchema = toStandardJsonSchema({
+        type: 'OBJECT',
+        properties: {
+            title: { type: 'STRING', description: 'Doc title' },
+            tags: { type: 'ARRAY', items: { type: 'STRING' } }
+        },
+        required: ['title']
+    });
+    assert.strictEqual(convertedSchema.type, 'object');
+    assert.strictEqual(convertedSchema.properties.title.type, 'string');
+    assert.strictEqual(convertedSchema.properties.tags.type, 'array');
+    assert.strictEqual(convertedSchema.properties.tags.items.type, 'string');
+
+    console.log("All PDF download, Library organization, author deduplication, Mermaid sanitization, multi-provider LLM, and Library Index reading checks passed!");
 })();
