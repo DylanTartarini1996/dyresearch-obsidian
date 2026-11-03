@@ -9,6 +9,7 @@ import {
 } from './src/engine/pdf-service';
 import { getLibrarianTools } from './src/engine/tools/library';
 import { getTeachingTools } from './src/engine/tools/teaching';
+import { getNoteTakingTools, sanitizeMermaidBlocks } from './src/engine/tools/notes';
 
 const files = new Map<string, string>();
 const binaryFiles = new Map<string, ArrayBuffer>();
@@ -171,5 +172,54 @@ const mockPlugin = {
     assert.strictEqual(sanitizeTag('grouped-query attention!'), 'grouped-query-attention');
     assert.strictEqual(sanitizeTag('#sliding window attention'), 'sliding-window-attention');
 
-    console.log("All PDF download, Library organization, author deduplication, and Library Index reading checks passed!");
+    // Test Mermaid block sanitization (auto-quoting unquoted labels with parens/math/wikilinks & mindmaps)
+    const rawMermaidMd = [
+        '# Transformer Note',
+        '```mermaid',
+        'flowchart TD',
+        '  A[Scaled Dot-Product (Q, K, V)] --> B[SoftMax: $QK^T / \\sqrt{d_k}$]',
+        '  B --> C[[Multi-Head Attention]]',
+        '```',
+        '',
+        '```mermaid',
+        'mindmap',
+        '  root((Transformer Architecture))',
+        '    Encoder: Self-Attention [Layer]',
+        '    Decoder (Masked Attention)',
+        '```'
+    ].join('\n');
+
+    const cleanedMermaidMd = sanitizeMermaidBlocks(rawMermaidMd);
+    assert.ok(cleanedMermaidMd.includes('A["Scaled Dot-Product (Q, K, V)"]'));
+    assert.ok(cleanedMermaidMd.includes('B["SoftMax: QK^T / \\sqrt{d_k}"]'));
+    assert.ok(cleanedMermaidMd.includes('root(("Transformer Architecture"))'));
+    assert.ok(cleanedMermaidMd.includes('Encoder Self-Attention Layer'));
+
+    // Test NoteTaker tools (create_obsidian_note with subfolder + tags + update_obsidian_note preserving frontmatter)
+    const noteTools = getNoteTakingTools(mockApp);
+    const createNoteTool = noteTools.find(t => t.name === 'create_obsidian_note')!;
+    const updateNoteTool = noteTools.find(t => t.name === 'update_obsidian_note')!;
+
+    await (createNoteTool as any).execute({
+        title: 'Notes/Transformer Overview',
+        content: rawMermaidMd,
+        tags: ['deep learning', 'self attention'],
+        status: 'evergreen'
+    });
+    assert.ok(files.has('Notes/Transformer Overview.md'));
+    const savedNote = files.get('Notes/Transformer Overview.md')!;
+    assert.ok(savedNote.includes('  - deep-learning'));
+    assert.ok(savedNote.includes('  - self-attention'));
+    assert.ok(savedNote.includes('A["Scaled Dot-Product (Q, K, V)"]'));
+
+    await (updateNoteTool as any).execute({
+        path: 'Notes/Transformer Overview.md',
+        content: '# Updated Transformer Note\nNew body without frontmatter.',
+        mode: 'overwrite'
+    });
+    const overwrittenNote = files.get('Notes/Transformer Overview.md')!;
+    assert.ok(overwrittenNote.includes('  - deep-learning'));
+    assert.ok(overwrittenNote.includes('# Updated Transformer Note'));
+
+    console.log("All PDF download, Library organization, author deduplication, Mermaid sanitization, and Library Index reading checks passed!");
 })();

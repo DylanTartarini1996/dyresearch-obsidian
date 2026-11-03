@@ -33187,7 +33187,7 @@ function createProfessorAgent(config, app) {
     name: "professor_agent",
     model: config.model,
     description: "The lead tutor and subject matter expert. Synthesizes user Vault notes with full indexed PDFs and documents in DyResearch/Library Index/.",
-    instruction: "You are the Professor of the DyResearch Team, the lead educator of this system. Your mission is to provide clear, accurate, and highly pedagogical explanations by combining the user's personal Vault notes with their indexed Library.\n\n### PHASE 1: INTERNAL WORKING MEMORY ENFORCEMENT (VAULT FIRST)\n1. Start at Home: Whenever a user asks a question, search their local workspace using `search_obsidian_vault`.\n2. If a Vault note is relevant, read its full content with `read_obsidian_note`.\n\n### PHASE 2: LIBRARY INDEX & FULL PDF READING\n1. Search Library Index: Use `search_knowledge_base` to search across all indexed papers and documents in `DyResearch/Library Index/` (which contain both summaries and the full extracted text of every PDF).\n2. Deep PDF Reading: When you find a relevant document in `DyResearch/Library Index/`, use `read_library_document` (passing `path_or_title`, and optionally `section_query` for specific sections/equations or `page` for a specific page number) to read the exact text, mathematical formulas, tables, or sections from the extracted PDF!\n3. Missing Data: Only if both the Vault and `DyResearch/Library Index/` return no matching documents, inform the user or ask the Coordinator to have the Researcher download the paper.\n\n### PHASE 3: GRAPH CONNECTIONS (CONTEXTUALIZATION)\n1. Map library findings back to the user's Vault notes using `get_obsidian_relations`.\n\n### PHASE 4: TEACHING & COMPOSITION RULES\n1. Pedagogical Synthesis: Synthesize findings into a cohesive lesson using analogies, clear derivations, and the Feynman technique.\n2. Mandatory Citations: Cite papers with their title and link to the local PDF or index note (e.g. `[[DyResearch/Library Index/...]]`), and use `[[Wikilinks]]` for notes in the user's Vault.\n3. Structural Clarity: Use rich Markdown (Headers, LaTeX math `$...$` / `$$...$$`, bullet points, and tables).\n4. The Socratic Method: End your lesson with a brief, thought-provoking follow-up question unless asked for a quick summary.",
+    instruction: "You are the Professor of the DyResearch Team, the lead educator of this system. Your mission is to provide clear, accurate, and highly pedagogical explanations by combining the user's personal Vault notes with their indexed Library.\n\n### PHASE 1: INTERNAL WORKING MEMORY ENFORCEMENT (VAULT FIRST)\n1. Start at Home: Whenever a user asks a question, search their local workspace using `search_obsidian_vault`.\n2. If a Vault note is relevant, read its full content with `read_obsidian_note`.\n\n### PHASE 2: LIBRARY INDEX & FULL PDF READING\n1. Search Library Index: Use `search_knowledge_base` to search across all indexed papers and documents in `DyResearch/Library Index/` (which contain both summaries and the full extracted text of every PDF).\n2. Deep PDF Reading: When you find a relevant document in `DyResearch/Library Index/`, use `read_library_document` (passing `path_or_title`, and optionally `section_query` for specific sections/equations or `page` for a specific page number) to read the exact text, mathematical formulas, tables, or sections from the extracted PDF!\n3. Missing Data: Only if both the Vault and `DyResearch/Library Index/` return no matching documents, inform the user or ask the Coordinator to have the Researcher download the paper.\n\n### PHASE 3: GRAPH CONNECTIONS (CONTEXTUALIZATION)\n1. Map library findings back to the user's Vault notes using `get_obsidian_relations`.\n\n### PHASE 4: TEACHING & COMPOSITION RULES\n1. Pedagogical Synthesis: Synthesize findings into a cohesive lesson using analogies, clear derivations, and the Feynman technique.\n2. Mandatory Citations: Cite papers with their title and link to the local PDF or index note (e.g. `[[DyResearch/Library Index/...]]`), and use `[[Wikilinks]]` for notes in the user's Vault.\n3. Structural & Visual Clarity: Use rich Markdown (Headers, LaTeX math `$...$` / `$$...$$`, bullet points, tables, and ```mermaid diagrams such as `flowchart TD`, `mindmap`, or `sequenceDiagram` with double-quoted node labels `id[\"Label\"]`).\n4. The Socratic Method: End your lesson with a brief, thought-provoking follow-up question unless asked for a quick summary.",
     tools
   });
 }
@@ -33328,56 +33328,217 @@ function createResearcherAgent(config, app) {
 }
 
 // src/engine/tools/notes.ts
+function sanitizeMermaidBlocks(markdown) {
+  return markdown.replace(/```mermaid\s*\n([\s\S]*?)```/g, (_fullMatch, rawBody) => {
+    const lines = rawBody.replace(/\r\n/g, "\n").split("\n");
+    const firstNonEmpty = lines.find((l) => l.trim().length > 0 && !l.trim().startsWith("%%"))?.trim() || "";
+    const isMindmap = /^mindmap\b/i.test(firstNonEmpty);
+    const isFlowchart = /^(?:flowchart|graph)\b/i.test(firstNonEmpty);
+    const cleanedLines = lines.map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("%%"))
+        return line;
+      if (isMindmap) {
+        if (/^mindmap\b/i.test(trimmed))
+          return line;
+        const indentMatch = line.match(/^(\s*)/);
+        const indent = indentMatch ? indentMatch[1] : "  ";
+        const shapedMatch = trimmed.match(/^([A-Za-z0-9_]+)\s*(\(\(|\[\[|\(\)|\{\{|\(|\)|\[)\s*"?([^"\n]+?)"?\s*(\)\)|\]\]|\(\)|\}\}|\)|\])\s*$/);
+        if (shapedMatch) {
+          const id2 = shapedMatch[1];
+          const open = shapedMatch[2];
+          const inner = shapedMatch[3].replace(/\$/g, "").replace(/"/g, "'").trim();
+          const close = shapedMatch[4];
+          return `${indent}${id2}${open}"${inner}"${close}`;
+        }
+        const cleanNode = trimmed.replace(/\$/g, "").replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m2, p12, p22) => p22 || p12).replace(/[:;[\]{}()"]/g, " ").replace(/\s+/g, " ").trim();
+        return `${indent}${cleanNode}`;
+      }
+      if (isFlowchart) {
+        if (/^(?:flowchart|graph|subgraph|end|direction|style|classDef|class|click|linkStyle)\b/i.test(trimmed)) {
+          const subMatch = line.match(/^(\s*subgraph\s+)([A-Za-z0-9_]+)\s*\[\s*(?!")([^\]]+)\]\s*$/);
+          if (subMatch) {
+            const safeTitle = subMatch[3].replace(/\$/g, "").replace(/"/g, "'").trim();
+            return `${subMatch[1]}${subMatch[2]}["${safeTitle}"]`;
+          }
+          return line;
+        }
+        let updated = line.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m2, p12, p22) => p22 || p12).replace(/\$([^$]+)\$/g, "$1");
+        updated = updated.replace(
+          /\b([A-Za-z0-9_]+)\[\s*(?![/"\\[])([^\]\n]+?)\s*\]/g,
+          (_m2, id2, label) => {
+            const safeLabel = label.replace(/"/g, "'").trim();
+            return `${id2}["${safeLabel}"]`;
+          }
+        );
+        updated = updated.replace(
+          /\b([A-Za-z0-9_]+)\(\s*(?![("[\]])([^)\n]+?)\s*\)/g,
+          (_m2, id2, label) => {
+            const safeLabel = label.replace(/"/g, "'").trim();
+            return `${id2}("${safeLabel}")`;
+          }
+        );
+        return updated;
+      }
+      return line;
+    });
+    return "```mermaid\n" + cleanedLines.join("\n").trimEnd() + "\n```";
+  });
+}
+function normalizeNoteFrontmatter(content, extraTags, status) {
+  const cleanExtraTags = (extraTags || []).map(sanitizeTag).filter(Boolean);
+  const cleanStatus = status ? sanitizeTag(status) : "";
+  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!fmMatch) {
+    if (cleanExtraTags.length === 0 && !cleanStatus) {
+      return content;
+    }
+    const allTags = Array.from(/* @__PURE__ */ new Set([...cleanExtraTags, ...cleanStatus ? [cleanStatus] : []]));
+    const fmLines = ["---"];
+    if (cleanStatus)
+      fmLines.push(`status: "${cleanStatus}"`);
+    if (allTags.length > 0) {
+      fmLines.push("tags:");
+      allTags.forEach((t) => fmLines.push(`  - ${t}`));
+    }
+    fmLines.push(`updated_at: "${(/* @__PURE__ */ new Date()).toISOString()}"`, "---", "");
+    return fmLines.join("\n") + content;
+  }
+  const rawYaml = fmMatch[1];
+  const body = content.slice(fmMatch[0].length);
+  const lines = rawYaml.split(/\r?\n/);
+  const outLines = [];
+  let inTagsList = false;
+  const collectedTags = [];
+  for (const line of lines) {
+    if (inTagsList) {
+      if (/^\s*-\s+(.+)$/.test(line)) {
+        const rawTag = line.replace(/^\s*-\s+/, "").trim();
+        const cleaned = sanitizeTag(rawTag);
+        if (cleaned)
+          collectedTags.push(cleaned);
+        continue;
+      } else {
+        const merged = Array.from(/* @__PURE__ */ new Set([...collectedTags, ...cleanExtraTags]));
+        merged.forEach((t) => outLines.push(`  - ${t}`));
+        inTagsList = false;
+      }
+    }
+    const inlineTagsMatch = line.match(/^tags:\s*\[([^\]]*)\]\s*$/);
+    if (inlineTagsMatch) {
+      const inlineItems = inlineTagsMatch[1].split(",").map((s) => sanitizeTag(s.replace(/['"]/g, ""))).filter(Boolean);
+      const merged = Array.from(/* @__PURE__ */ new Set([...inlineItems, ...cleanExtraTags]));
+      outLines.push("tags:");
+      merged.forEach((t) => outLines.push(`  - ${t}`));
+      continue;
+    }
+    const singleLineTagsMatch = line.match(/^tags:\s*(.+)$/);
+    if (singleLineTagsMatch && !singleLineTagsMatch[1].trim().startsWith("[")) {
+      const items = singleLineTagsMatch[1].split(/[,;]+/).map((s) => sanitizeTag(s)).filter(Boolean);
+      const merged = Array.from(/* @__PURE__ */ new Set([...items, ...cleanExtraTags]));
+      outLines.push("tags:");
+      merged.forEach((t) => outLines.push(`  - ${t}`));
+      continue;
+    }
+    if (/^tags:\s*$/.test(line)) {
+      outLines.push("tags:");
+      inTagsList = true;
+      continue;
+    }
+    outLines.push(line);
+  }
+  if (inTagsList) {
+    const merged = Array.from(/* @__PURE__ */ new Set([...collectedTags, ...cleanExtraTags]));
+    merged.forEach((t) => outLines.push(`  - ${t}`));
+  }
+  return `---
+${outLines.join("\n")}
+---
+${body}`;
+}
 function getNoteTakingTools(app) {
   return [
     new Dt({
       name: "create_obsidian_note",
-      description: "Creates a new note in the Obsidian Vault. Provide title and content.",
+      description: "Creates a new note in the Obsidian Vault (supporting Markdown, LaTeX, Callouts, and Mermaid diagrams/mindmaps).",
       parameters: {
         type: "OBJECT",
         properties: {
-          title: { type: "STRING", description: "Title or relative path of the note." },
-          content: { type: "STRING", description: "Markdown content of the note." }
+          title: { type: "STRING", description: 'Title or relative path of the note (e.g. "Game Theory/Nash Equilibrium").' },
+          content: { type: "STRING", description: "Markdown content of the note (including optional Mermaid diagrams, mindmaps, callouts, and [[Backlinks]])." },
+          tags: {
+            type: "ARRAY",
+            items: { type: "STRING" },
+            description: "Optional list of tags (automatically converted to kebab-case Obsidian tags)."
+          },
+          status: { type: "STRING", description: 'Optional note maturity status (e.g. "seed", "branch", "evergreen").' }
         },
         required: ["title", "content"]
       },
       execute: async (args) => {
-        const title = args.title || "Untitled Note";
-        const content = args.content || "";
+        const title = (args.title || "Untitled Note").trim();
+        const rawContent = args.content || "";
         const path = `${title.endsWith(".md") ? title : title + ".md"}`;
+        if (path.includes("/")) {
+          const folder = path.split("/").slice(0, -1).join("/");
+          if (folder)
+            await ensureVaultFolder(app, folder);
+        }
         const exists = await app.vault.adapter.exists(path);
         if (exists)
           return `Error: Note ${path} already exists. Use update_obsidian_note instead.`;
-        await app.vault.create(path, content);
+        const tags = Array.isArray(args.tags) ? args.tags : void 0;
+        const preparedContent = normalizeNoteFrontmatter(
+          sanitizeMermaidBlocks(rawContent),
+          tags,
+          args.status
+        );
+        if (typeof app.vault.create === "function") {
+          await app.vault.create(path, preparedContent);
+        } else {
+          await app.vault.adapter.write(path, preparedContent);
+        }
         return `Note ${path} created successfully.`;
       }
     }),
     new Dt({
       name: "update_obsidian_note",
-      description: 'Updates an existing note in the Obsidian Vault. mode="append" or "overwrite".',
+      description: 'Updates an existing note in the Obsidian Vault. mode="append" or "overwrite" (preserves existing YAML frontmatter if omitted).',
       parameters: {
         type: "OBJECT",
         properties: {
           path: { type: "STRING", description: "Path of the existing note." },
-          content: { type: "STRING", description: "Content to append or overwrite." },
+          content: { type: "STRING", description: "Markdown content to append or overwrite (supports Mermaid flowcharts, mindmaps, sequence diagrams, and callouts)." },
           mode: { type: "STRING", description: 'Update mode: "append" or "overwrite".' }
         },
         required: ["path", "content"]
       },
       execute: async (args) => {
-        const path = args.path;
-        const content = args.content;
+        const rawPath = (args.path || "").trim();
+        const rawContent = args.content;
         const mode = args.mode || "append";
-        if (!path || !content)
+        if (!rawPath || !rawContent)
           return "Error: path and content are required.";
+        const path = rawPath.endsWith(".md") ? rawPath : `${rawPath}.md`;
         const exists = await app.vault.adapter.exists(path);
         if (!exists)
           return `Error: Note ${path} does not exist. Use create_obsidian_note instead.`;
+        const existingContent = await app.vault.adapter.read(path);
+        const sanitizedNew = sanitizeMermaidBlocks(rawContent);
         if (mode === "overwrite") {
-          await app.vault.adapter.write(path, content);
+          let finalContent = sanitizedNew;
+          const existingFmMatch = existingContent.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+          const newHasFm = /^---\r?\n[\s\S]*?\r?\n---/.test(sanitizedNew);
+          if (existingFmMatch && !newHasFm) {
+            finalContent = `${existingFmMatch[0].trimEnd()}
+
+${sanitizedNew}`;
+          }
+          finalContent = normalizeNoteFrontmatter(finalContent);
+          await app.vault.adapter.write(path, finalContent);
         } else {
-          const existingContent = await app.vault.adapter.read(path);
-          await app.vault.adapter.write(path, existingContent + "\n\n" + content);
+          const combined = normalizeNoteFrontmatter(existingContent + "\n\n" + sanitizedNew);
+          await app.vault.adapter.write(path, combined);
         }
         return `Note ${path} updated successfully.`;
       }
@@ -33406,13 +33567,13 @@ function getNoteTakingTools(app) {
     }),
     new Dt({
       name: "list_obsidian_notes",
-      description: "Lists all markdown notes available in the Obsidian Vault.",
+      description: "Lists all markdown notes available in the Obsidian Vault (excluding internal session logs).",
       parameters: {
         type: "OBJECT",
         properties: {}
       },
-      execute: async (args) => {
-        const files = app.vault.getMarkdownFiles();
+      execute: async () => {
+        const files = app.vault.getMarkdownFiles().filter((f7) => !f7.path.startsWith("DyResearch/Sessions/"));
         return files.map((f7) => f7.path).join(", ");
       }
     }),
@@ -33427,9 +33588,10 @@ function getNoteTakingTools(app) {
         required: ["path"]
       },
       execute: async (args) => {
-        const path = args.path;
-        if (!path)
+        const rawPath = (args.path || "").trim();
+        if (!rawPath)
           return "Error: path is required.";
+        const path = rawPath.endsWith(".md") ? rawPath : `${rawPath}.md`;
         const exists = await app.vault.adapter.exists(path);
         if (!exists)
           return `Error: Note ${path} not found.`;
@@ -33446,8 +33608,8 @@ function createNoteTakerAgent(config, app) {
   return new cp({
     name: "note_taking_agent",
     model: config.model,
-    description: "Specialist in Markdown formatting and Obsidian Vault management. Call this agent to transform research, summaries, or explanations into structured 'Evergreen' notes, handle file creation, manage backlinks, and organize the user's local knowledge base.",
-    instruction: "You are the Lead NoteTaker and Vault Manager of the DyResearch Team. Your mission is to maintain a 'Second Brain' for the user by creating, organizing, and pruning 'Evergreen' notes in the Obsidian Vault.\n\n### 1. THE DISCOVERY PHASE (READ BEFORE WRITE)\n- Before creating a new note, ALWAYS use `list_obsidian_notes` to see if a note on the topic already exists.\n- If a note exists, use `read_obsidian_note` to ingest its current context. This prevents duplicates and ensures knowledge continuity.\n\n### 2. COMPOSITION & UPDATING RULES\n- **Atomic Knowledge:** Keep notes focused on a single concept. If a topic grows too large, split it into multiple linked files.\n- **Semantic Linking:** Heavily use [[Backlinks]] to connect new information to existing notes found during the Discovery Phase.\n- **Visuals & Callouts:** Use Mermaid.js for diagrams and Obsidian callouts (e.g., > [!ABSTRACT]) for high-level summaries.\n- **Intelligent Updating:** Use `update_obsidian_note`. Prefer 'append' for minor facts (adds a timestamped block) and 'overwrite' for structural reorganizations or rewrites.\n\n### 3. VAULT HYGIENE (PRUNING)\n- If the user indicates information is outdated, or if you identify two highly redundant notes, use `delete_obsidian_note` to maintain vault health.\n- Note: Deleting a file also triggers an automatic purge of those facts from the Librarian's vector memory.\n\n### 4. METADATA & FRONTMATTER\n- **New Notes:** When using `create_obsidian_note`, provide tags and a status field (e.g., #seed, #branch, #evergreen).\n- **Existing Notes:** When using `update_obsidian_note` in 'overwrite' mode, DO NOT provide the frontmatter; the tool will preserve the existing metadata for you.",
+    description: "Specialist in Markdown formatting, Mermaid diagrams/mindmaps, and Obsidian Vault management. Call this agent to transform research, summaries, or explanations into structured 'Evergreen' notes with visual graphs, diagrams, mind maps, backlinks, and callouts.",
+    instruction: 'You are the Lead NoteTaker and Vault Manager of the DyResearch Team. Your mission is to maintain a \'Second Brain\' for the user by creating, organizing, and enriching \'Evergreen\' notes in the Obsidian Vault.\n\n### 1. THE DISCOVERY PHASE (READ BEFORE WRITE)\n- Before creating a new note, ALWAYS use `list_obsidian_notes` to see if a note on the topic already exists.\n- If a note exists, use `read_obsidian_note` to ingest its current context. This prevents duplicates and ensures knowledge continuity.\n\n### 2. COMPOSITION & UPDATING RULES\n- **Atomic Knowledge:** Keep notes focused on a single concept. If a topic grows too large, split it into multiple linked files.\n- **Semantic Linking:** Heavily use `[[Backlinks]]` in body prose to connect new information to existing notes found during the Discovery Phase.\n- **Callouts:** Use Obsidian callouts (`> [!ABSTRACT]`, `> [!NOTE]`, `> [!IMPORTANT]`, `> [!EXAMPLE]`) for high-level summaries and key theorems.\n- **Intelligent Updating:** Use `update_obsidian_note`. Prefer `\'append\'` for incremental additions and `\'overwrite\'` for structural reorganizations.\n\n### 3. MERMAID DIAGRAMS, GRAPHS & MIND MAPS (OBSIDIAN-SAFE SYNTAX)\nProactively include visual diagrams using fenced ```mermaid code blocks whenever a concept involves hierarchies, processes, architectures, or relationships:\n- **Mind Maps (`mindmap`):** Ideal for concept hierarchies, book/paper overviews, and topic breakdowns.\n  - Use strict 2-space indentation per level, starting with a single root node `  root(("Central Concept"))`.\n  - Keep child node lines as plain text without colons `:`, brackets `[]`, or quotes.\n- **Flowcharts & Architecture Graphs (`flowchart TD` or `flowchart LR`):** Ideal for model architectures, causal chains, and algorithms.\n  - ALWAYS wrap node labels in double quotes: `A["Input Embedding (d = 512)"] --> B["Multi-Head Attention"]`.\n- **Sequence, State & Class Diagrams (`sequenceDiagram`, `stateDiagram-v2`, `classDiagram`, `erDiagram`):** Use for multi-step interactions, state transitions, and formal taxonomies.\n- **Strict Obsidian Mermaid Rules:**\n  1. NEVER put unquoted parentheses `()`, brackets `[]`, or colons `:` inside node labels\u2014always wrap labels in double quotes (`id["Label (detail)"]`).\n  2. NEVER put raw `$...$` LaTeX blocks or `[[Wikilinks]]` inside Mermaid node labels (use Unicode symbols like `\u03B1, \u03B2, \u03B8, \u2211, \u2192` inside nodes, and place full LaTeX equations in the Markdown prose outside the diagram).\n\n### 4. VAULT HYGIENE (PRUNING)\n- If the user indicates information is outdated, or if you identify two highly redundant notes, use `delete_obsidian_note` to maintain vault health.\n\n### 5. METADATA & FRONTMATTER\n- **New Notes:** When using `create_obsidian_note`, pass `tags` in kebab-case (e.g., `["game-theory", "nash-equilibrium"]`\u2014never use spaces in tags) and `status` (`"seed"`, `"branch"`, or `"evergreen"`).\n- **Existing Notes:** When using `update_obsidian_note` in `\'overwrite\'` mode, existing YAML frontmatter is preserved automatically if omitted.',
     tools
   });
 }

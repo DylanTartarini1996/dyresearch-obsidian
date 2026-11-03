@@ -33,7 +33,7 @@ export function createProfessorAgent(config: AgentConfig, app: any): LlmAgent {
             "### PHASE 4: TEACHING & COMPOSITION RULES\n" +
             "1. Pedagogical Synthesis: Synthesize findings into a cohesive lesson using analogies, clear derivations, and the Feynman technique.\n" +
             "2. Mandatory Citations: Cite papers with their title and link to the local PDF or index note (e.g. `[[DyResearch/Library Index/...]]`), and use `[[Wikilinks]]` for notes in the user's Vault.\n" +
-            "3. Structural Clarity: Use rich Markdown (Headers, LaTeX math `$...$` / `$$...$$`, bullet points, and tables).\n" +
+            "3. Structural & Visual Clarity: Use rich Markdown (Headers, LaTeX math `$...$` / `$$...$$`, bullet points, tables, and ```mermaid diagrams such as `flowchart TD`, `mindmap`, or `sequenceDiagram` with double-quoted node labels `id[\"Label\"]`).\n" +
             "4. The Socratic Method: End your lesson with a brief, thought-provoking follow-up question unless asked for a quick summary.",
         tools: tools
     });
