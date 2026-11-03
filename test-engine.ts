@@ -4,7 +4,8 @@ import {
     saveAndIndexDocument,
     listLibraryCatalog,
     normalizeAndDeduplicateAuthors,
-    resolveConsistentTopicFolder
+    resolveConsistentTopicFolder,
+    sanitizeTag
 } from './src/engine/pdf-service';
 import { getLibrarianTools } from './src/engine/tools/library';
 import { getTeachingTools } from './src/engine/tools/teaching';
@@ -157,6 +158,11 @@ const mockPlugin = {
 
     const newTopic = resolveConsistentTopicFolder('reinforcement_learning', ['Machine Learning']);
     assert.strictEqual(newTopic, 'Reinforcement Learning');
+
+    // Test tag sanitization (Obsidian tags cannot contain spaces)
+    assert.strictEqual(sanitizeTag('large language models'), 'large-language-models');
+    assert.strictEqual(sanitizeTag('grouped-query attention!'), 'grouped-query-attention');
+    assert.strictEqual(sanitizeTag('#sliding window attention'), 'sliding-window-attention');
 
     console.log("All PDF download, Library organization, author deduplication, and Library Index reading checks passed!");
 })();

@@ -21,7 +21,7 @@ export function createLibrarianAgent(config: AgentConfig, app: any): LlmAgent {
 
             "### PHASE 1: ORGANIZING & INDEXING DOCUMENTS\n" +
             "1. Topic Subfolders & Taxonomy Consistency: First call `list_available_sources` to inspect `existing_topic_folders` and `canonical_authors`. Whenever a PDF or document is downloaded or uploaded, use `organize_and_index_document` to place the raw PDF into an existing `topic_folder` if semantically close, or create a clear Title Case subfolder inside `DyResearch/Library/` (e.g., 'Machine Learning', 'Game Theory').\n" +
-            "2. Document Kind & Author Deduplication: Provide `doc_kind` ('Paper', 'Book', or 'Document'), `title`, `topic_folder`, lowercase `subject`, `author` (normalized as 'First Last' and deduplicated against `canonical_authors`), an array of `tags`, `abstract`, `section_titles`, `summary`, and `conclusions`. Keep the index note clean and structured.\n" +
+            "2. Document Kind & Author Deduplication: Provide `doc_kind` ('Paper', 'Book', or 'Document'), `title`, `topic_folder`, lowercase `subject`, `author` (normalized as 'First Last' and deduplicated against `canonical_authors`), an array of kebab-case `tags` (Obsidian tags cannot contain spaces; use hyphens like 'large-language-models' or 'grouped-query-attention'), `abstract`, `section_titles`, `summary`, and `conclusions`. Keep the index note clean and structured.\n" +
             "3. Web / Text Sources: For scraped web articles without a binary PDF, use `ingest_source_file` or `ingest_source_chunks` to index them into `DyResearch/Library Index/`.\n\n" +
 
             "### PHASE 2: INVENTORY & DISCOVERY\n" +

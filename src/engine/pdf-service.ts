@@ -79,6 +79,23 @@ export function sanitizeTopicFolder(topic: string): string {
 }
 
 /**
+ * Normalizes a tag string into a valid Obsidian tag:
+ * - Obsidian tags cannot contain spaces (must use hyphens, e.g. "large-language-models")
+ * - Obsidian tags cannot contain special symbols (slashes, commas, colons, brackets, etc.)
+ * - Strips leading '#'
+ */
+export function sanitizeTag(rawTag: string): string {
+    return rawTag
+        .replace(/^#+/, '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_]+/g, '-')
+        .replace(/[^a-z0-9\-\/]/g, '')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
+/**
  * Cleans a single raw author name string:
  * - Removes footnote symbols (*, ∗, †, ‡, §, numbers) and emails
  * - Converts "Last, First" into "First Last"
@@ -598,11 +615,12 @@ export async function saveAndIndexDocument(
     await writeVaultBinary(app, filePath, options.buffer);
 
     const defaultTags = [
-        docKind.toLowerCase(),
-        subject.replace(/\s+/g, '-').replace(/[^a-z0-9-_]/gi, ''),
-        ext
+        sanitizeTag(docKind),
+        sanitizeTag(subject),
+        sanitizeTag(ext)
     ].filter(Boolean);
-    const allTags = Array.from(new Set([...(options.tags || []), ...defaultTags]));
+    const cleanedInputTags = (options.tags || []).map(sanitizeTag).filter(Boolean);
+    const allTags = Array.from(new Set([...cleanedInputTags, ...defaultTags]));
 
     const indexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
     const indexMarkdown = buildIndexMarkdown({
@@ -664,8 +682,9 @@ export interface IndexMarkdownFields {
  */
 export function buildIndexMarkdown(fields: IndexMarkdownFields): string {
     const docKind: DocumentKind = fields.docKind || 'Paper';
-    const tagLines = fields.tags.length > 0
-        ? fields.tags.map(t => `  - ${t.replace(/^#/, '').trim()}`).join('\n')
+    const cleanedTags = (fields.tags || []).map(sanitizeTag).filter(Boolean);
+    const tagLines = cleanedTags.length > 0
+        ? Array.from(new Set(cleanedTags)).map(t => `  - ${t}`).join('\n')
         : '  - research';
 
     const sectionsHeading = docKind === 'Book'

@@ -14,7 +14,8 @@ import {
     listFilesRecursive,
     getExistingLibraryTaxonomy,
     normalizeAndDeduplicateAuthors,
-    resolveConsistentTopicFolder
+    resolveConsistentTopicFolder,
+    sanitizeTag
 } from '../pdf-service';
 
 async function upsertIndexNote(
@@ -120,13 +121,13 @@ async function upsertIndexNote(
 
     const rawTags = Array.isArray(args.tags)
         ? args.tags
-        : (typeof args.tags === 'string' ? (args.tags as string).split(',').map(s => s.trim()) : []);
+        : (typeof args.tags === 'string' ? (args.tags as string).split(/[,;]+/).map(s => s.trim()) : []);
     const existingTags = Array.isArray(existingFm.tags) ? existingFm.tags : [];
     const mergedTags = Array.from(new Set([
-        docKind.toLowerCase(),
-        ...rawTags,
-        ...existingTags,
-        subject.replace(/\s+/g, '-')
+        sanitizeTag(docKind),
+        ...rawTags.map(sanitizeTag),
+        ...existingTags.map(sanitizeTag),
+        sanitizeTag(subject)
     ].filter(Boolean)));
 
     const abstractText = args.abstract || existingAbstract;
