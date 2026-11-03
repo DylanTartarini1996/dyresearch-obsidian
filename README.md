@@ -1,85 +1,125 @@
 # 👨🏻‍🎓 DyResearch
 
-Typescript Plugin for a [Multi-Agent AI system](https://github.com/DylanTartarini1996/dyresearch) designed to aid in studying, learning, and researching topics.
+A powerful, **serverless** Multi-Agent AI research system designed to aid in studying, learning, and managing academic literature and personal knowledge directly inside Obsidian.
 
->[!WARNING]. 
->
-> To use the DyResearch plugin, the user needs to have the [DyResearch Server](https://github.com/DylanTartarini1996/dyresearch) running. 
-> Make sure to having cloned the repo and started the python server 
-
-
----
-## 🧩 Functionalities
-
-The DyResearch Obsidian plugin bridges your knowledge base with the intelligent backend, providing:
-
-- Intelligent Chat: Engage in multi-turn conversations with specialized agents (Professor, Librarian, Researcher) via a chat interface.
-- Knowledge Management: Seamlessly ingest documents into the vector store for RAG-powered retrieval.
-- Session Management: Create, rename, delete, and search through your AI chat sessions directly from Obsidian.
-- History Sync: Review previous chat history and retrieve context from past interactions.
-- Note Taking: Automatically digest information into structured notes with support for Mermaid.js diagrams.  
-
-![screen](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_screen.png)
+> [!TIP]
+> **DyResearch 2.0 is 100% Serverless & Multi-Platform!**
+> You no longer need an external Python backend, vector database, or local server. The entire multi-agent brain runs natively inside Obsidian across **macOS, Windows, Linux, iPad, and iPhone** using the Google Agent Development Kit (ADK) and Obsidian's native APIs.
 
 ---
 
-## 🤖 Agents 
+## ✨ Key Capabilities
 
-A variety of specialized agents using configurable LLMs work together to process requests:
+- **Intelligent Autonomous Multi-Agent Team**:
+  Collaborative team of specialized agents (Coordinator, Professor, Librarian, Researcher, NoteTaker) cooperating to teach, synthesize, investigate, and organize your knowledge base.
+- **Multi-Provider LLM Engine**:
+  Mix and match AI models per agent across **Google Gemini, OpenAI, Anthropic Claude, OpenRouter, and Groq** with full tool-calling and autonomous agent transfer.
+- **Two-Tier Smart Library Architecture**:
+  - `DyResearch/Library/<Topic>/`: Stores raw binary `.pdf` and `.docx` files organized into clean, field-agnostic topic subfolders.
+  - `DyResearch/Library Index/`: Stores clean, structured Markdown index cards containing YAML frontmatter, abstracts, chapter/section outlines, and conclusions.
+- **Smart Document Upload & Auto-Indexing**:
+  - Supports **Academic Papers, Textbooks & Books, and General Documents** of any file size.
+  - Fast outline & front-matter extraction allows even 1,000-page textbooks to index rapidly.
+  - Automatically infers titles and authors from document headers and deduplicates author names.
+  - Automatically matches and reuses existing topic subfolders consistently across your vault.
+- **On-Demand Deep PDF Reading**:
+  The Professor agent can query specific pages or search mathematical formulas and sections on-the-fly directly from linked raw PDFs without blowing up context window tokens.
+- **Interactive Library Search & Filtering**:
+  Real-time filtering in the sidebar by **Document Kind** (`Paper`, `Book`, `Document`), **Topic**, **Author(s)**, or search keywords, with 1-click filter chips.
+- **Obsidian-Safe Mermaid Diagrams & Mind Maps**:
+  The NoteTaker proactively illustrates concepts using native Obsidian ```` ```mermaid ```` diagrams (`mindmap`, `flowchart TD`, `sequenceDiagram`, `stateDiagram-v2`, `erDiagram`) with automatic syntax sanitization and valid kebab-case tags.
+- **Persistent Sessions & Rename Anytime**:
+  Research sessions are stored as readable Markdown notes in `DyResearch/Sessions/`. Rename sessions on-the-fly directly from the chat header or history panel; conversation memory and agent states persist seamlessly.
+- **Flexible Workspace Modes**:
+  Dock the research panel directly in Obsidian's right sidebar or pop it out into a resizable, draggable floating window.
+
+---
+
+## 🤖 The DyResearch Agent Team
+
+A specialized team of autonomous agents using configurable LLMs working together in your vault:
 
 ### 👮🏽‍♀️ Coordinator
-The central manager that handles incoming requests from the user and delegates tasks to the appropriate specialized agent.
+The executive manager assessing your goals, routing queries to the right specialist, and overseeing multi-step workflows.
 
 ### 👨🏻‍🏫 Professor
-Handles specific questions and tutoring queries by drawing from its core knowledge or fetching retrieved context directly from the vector store.
+The lead educator and subject-matter tutor. Searches your personal Vault notes first (*Vault-First principle*), queries the Library Index, and reads targeted passages from raw PDFs on demand to explain theorems, formulas, and concepts.
 
 ### 👩🏻‍🏫 Librarian
-Manages the organization of knowledge within the system. As the owner of the vector store library, the Librarian can:
-- Ingest documents and chunk them to organize information in the vector store.
-- List available sources by title or index.
-- Index different knowledge bases by subject and query them.
-- Cleanup the library by deleting chunks of a single file or a complete index.
+The vault archivist. Organizes raw documents into topic subfolders, ensures taxonomy consistency, normalizes author names, and maintains structured index cards.
 
 ### 👩🏻‍🔬 Researcher
-Autonomously navigates the web to find new information, discover fresh sources, and expand the knowledge base, providing up-to-date context to the rest of the system.
+The academic investigator. Autonomously searches arXiv and the web to find papers, verify publication metadata, and retrieve missing bibliography details.
 
-### 🧑🏻‍💻 Note Taker
-Responsible for digesting complex information into structured, useful notes specifically formatted for Obsidian:
-- Takes detailed notes in `.md` format.
-- Generates graphs and mind maps using Mermaid.js syntax.
+### 🧑🏻‍💻 NoteTaker
+The Second-Brain architect. Synthesizes lessons into structured "Evergreen" notes complete with Obsidian callouts, `[[Wikilinks]]`, and Obsidian-safe Mermaid mind maps and flowcharts.
 
 ---
 
-## ⚙️ Setup
-In order to setup the plugin, you need to enable it and configure its environment variables such as memory storage and AI agents API Keys / endpoints. 
- 
-### ✅ Enable Plugin
+## 🌐 Supported LLM Providers
 
-First, install the plugin directly browsing it via the community portal and enable it from Obsidian's settings.
+Configure different models for each agent in the plugin settings. 
 
-![enable](https://raw.githubusercontent.com/DylanTartarini1996/dyresearch-obsidian/main/assets/obsidian_enable_plugin.png)
+> [!NOTE]
+> The models listed below are **only examples of recommended and popular choices**. DyResearch is model-agnostic: you can type **any valid model identifier** supported by your chosen provider directly into the Model field (including newly released model versions).
 
-### 🔧 Environment Configuration
+| Provider | Representative Models *(Examples only)* | Setup |
+| :--- | :--- | :--- |
+| **Google Gemini** | `gemini-3.1-pro`, `gemini-3.8-flash` | Free API key from [Google AI Studio](https://aistudio.google.com/) |
+| **OpenAI** | `gpt-4o`, `gpt-4o-mini`, `o3-mini`, `o1`, `gpt-4.1` | API key from [OpenAI Platform](https://platform.openai.com/) |
+| **Anthropic Claude** | `claude-sonnet-4-20250514`, `claude-3-7-sonnet`, `claude-3-5-haiku` | API key from [Anthropic Console](https://console.anthropic.com/) |
+| **OpenRouter** | `meta-llama/llama-3.3-70b-instruct:free`, `deepseek/deepseek-chat`, `qwen/qwen-2.5-72b-instruct` *(any OpenRouter model ID)* | Free & paid models from [OpenRouter](https://openrouter.ai/) |
+| **Groq** | `llama-3.3-70b-versatile`, `deepseek-r1-distill-llama-70b`, `qwen-qwq-32b` | Ultra-fast free-tier keys from [Groq Console](https://console.groq.com/) |
 
-You can set up the configuration for session storage and agents in two ways:
+---
 
-1. Option one is to use the Obsidian's settings UI: 
-   - Open the **DyResearch** settings page within Obsidian.
-   - Configure the API endpoint and credentials provided by your hosting service.
-   - *Note: For standalone use, the system will automatically instantiate a local SQLite instance coupled with LanceDB to manage your vector data and session history locally. -> if you rather use postgres on your machine, point to it via the settings page*
+## 📱 Mobile Support
 
-    ![restart](assets/obsidian_enable_plugin.png)
+DyResearch is built entirely using Obsidian's public `app.vault`, `app.vault.adapter`, and `requestUrl` APIs:
+- **No Node.js or Electron dependencies** are bundled in the runtime.
+- **Works on iPad and iPhone** without additional configuration.
+- Supports both the docked slide-out panel on mobile and Obsidian Sync / iCloud sync.
 
-2. Second option is to ensure a `config.env` file is correctly populated in the root directory of the [Python server](https://github.com/DylanTartarini1996/dyresearch) with your API keys, the session storage URI and the obsidian vault path. More info and example on that repo. 
+---
+
+## ⚙️ Installation & Setup
+
+### Manual Installation
+1. Download the latest release (`main.js`, `manifest.json`, `styles.css`) from the [Releases](https://github.com/dylantartarini/dyresearch-obsidian/releases) page.
+2. In your Obsidian vault, navigate to `.obsidian/plugins/` and create a folder named `dyresearch-sidecar`.
+3. Copy `main.js`, `manifest.json`, and `styles.css` into that folder.
+4. Reload Obsidian, go to **Settings → Community Plugins**, and enable **DyResearch AI Sidecar**.
+
+### Configuration
+1. Open **Settings → DyResearch AI Sidecar**.
+2. Enter your API key(s) (Gemini, OpenAI, Anthropic, OpenRouter, or Groq).
+3. Select your desired Provider and Model for each of the 5 agents.
+4. Open the DyResearch ribbon icon or command palette to begin researching!
 
 ---
 
 ## 💻 Local Development
 
-build the plugin after having modified `main.ts` or `styles.css`
-
 ```bash
+# Clone into your vault plugins directory
+git clone https://github.com/dylantartarini/dyresearch-obsidian.git
+cd dyresearch-obsidian
 
+# Install dependencies
 npm install
-npx tsup main.ts --format cjs --external obsidian
+
+# Start development watcher
+npm run dev
+
+# Run automated engine & PDF test suite
+npm test
+
+# Build optimized production bundle
+npm run build
 ```
+
+---
+
+## 📄 License
+
+MIT License © 2026 Dylan Tartarini

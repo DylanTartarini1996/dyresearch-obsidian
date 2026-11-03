@@ -1,6 +1,6 @@
 {
   "name": "dyresearch-sidecar",
-  "version": "1.0.3",
+  "version": "2.0.0",
   "description": "Bridge to the DyResearch Agent system built with Google ADK.",
   "main": "main.js",
   "scripts": {
@@ -13,8 +13,13 @@
     "@types/node": "^20.0.0",
     "esbuild": "0.20.1",
     "obsidian": "latest",
-    "tslib": "latest",
-    "tsup": "^8.5.1",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@google/adk": "^2.1.0",
+    "@google/genai": "^2.24.0",
+    "openai": "^7.23.0",
+    "pdf-parse": "^2.4.5"
   }
 }

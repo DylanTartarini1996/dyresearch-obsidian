@@ -13,7 +13,7 @@ esbuild.build({
 	banner: {
 		js: banner,
 	},
-	entryPoints: ["main.ts"],
+	entryPoints: ["src/main.ts"],
 	bundle: true,
 	external: [
 		"obsidian",
@@ -34,6 +34,9 @@ esbuild.build({
 	],
 	format: "cjs",
 	target: "es2022",
+	define: {
+		"import.meta.url": '"file:///main.js"'
+	},
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
