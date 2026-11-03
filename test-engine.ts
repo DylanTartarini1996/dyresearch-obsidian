@@ -129,9 +129,16 @@ const mockPlugin = {
     const searchKbTool = profTools.find(t => t.name === 'search_knowledge_base')!;
     const searchRes = await (searchKbTool as any).execute({
         query: 'Transformer',
-        subject_filter: 'machine learning'
+        subject_filter: 'machine learning',
+        doc_kind_filter: 'Paper',
+        author_filter: 'A. Vaswani'
     });
     assert.ok(searchRes.includes('Attention_Is_All_You_Need.md'));
+
+    const searchWrongKind = await (searchKbTool as any).execute({
+        doc_kind_filter: 'Book'
+    });
+    assert.ok(searchWrongKind.includes('No matching documents found'));
 
     const readLibTool = profTools.find(t => t.name === 'read_library_document')!;
     const readRes = await (readLibTool as any).execute({

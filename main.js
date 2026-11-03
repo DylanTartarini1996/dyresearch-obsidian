@@ -78,7 +78,7 @@ var DyResearchSettingTab = class extends import_obsidian.PluginSettingTab {
 };
 
 // src/views/history-view.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/modals/chat-modal.ts
 var import_obsidian2 = require("obsidian");
@@ -409,15 +409,606 @@ var ChatModal = class extends import_obsidian2.Modal {
   }
 };
 
+// src/engine/pdf-service.ts
+var import_obsidian3 = require("obsidian");
+var LIBRARY_DIR = "DyResearch/Library";
+var LIBRARY_INDEX_DIR = "DyResearch/Library Index";
+async function ensureVaultFolder(app, folderPath) {
+  const parts = folderPath.split("/").filter(Boolean);
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    const exists = await app.vault.adapter.exists(current);
+    if (!exists) {
+      if (typeof app.vault.createFolder === "function") {
+        try {
+          await app.vault.createFolder(current);
+        } catch {
+          await app.vault.adapter.mkdir(current);
+        }
+      } else {
+        await app.vault.adapter.mkdir(current);
+      }
+    }
+  }
+}
+async function writeVaultBinary(app, filePath, buffer) {
+  const copy = buffer.slice(0);
+  if (typeof app.vault.getAbstractFileByPath === "function") {
+    const existing = app.vault.getAbstractFileByPath(filePath);
+    if (existing && typeof app.vault.modifyBinary === "function") {
+      await app.vault.modifyBinary(existing, copy);
+      return;
+    }
+    if (!existing && typeof app.vault.createBinary === "function") {
+      try {
+        await app.vault.createBinary(filePath, copy);
+        return;
+      } catch {
+      }
+    }
+  }
+  await app.vault.adapter.writeBinary(filePath, copy);
+}
+async function moveVaultFile(app, oldPath, newPath) {
+  if (oldPath === newPath)
+    return;
+  if (typeof app.vault.getAbstractFileByPath === "function" && typeof app.vault.rename === "function") {
+    const existing = app.vault.getAbstractFileByPath(oldPath);
+    if (existing) {
+      try {
+        await app.vault.rename(existing, newPath);
+        return;
+      } catch {
+      }
+    }
+  }
+  const bin = await app.vault.adapter.readBinary(oldPath);
+  await writeVaultBinary(app, newPath, bin);
+  await app.vault.adapter.remove(oldPath);
+}
+function sanitizeFileName(name) {
+  return name.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") || "Document";
+}
+function sanitizeTopicFolder(topic) {
+  return topic.replace(/[\\/:*?"<>|_-]/g, " ").replace(/\s+/g, " ").trim();
+}
+function sanitizeTag(rawTag) {
+  return rawTag.replace(/^#+/, "").trim().toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9\-\/]/g, "").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+}
+function cleanSingleAuthorName(raw) {
+  let cleaned = raw.replace(/\S+@\S+\.\S+/g, "").replace(/\bet\s+al\.?/gi, " ").replace(/[∗*†‡§¶∥#0-9]+/g, " ").replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim();
+  if (cleaned.includes(",")) {
+    const parts = cleaned.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length === 2 && !/^(Jr\.?|Sr\.?|II|III|IV|Ph\.?D\.?|MD)$/i.test(parts[1])) {
+      cleaned = `${parts[1]} ${parts[0]}`;
+    }
+  }
+  return cleaned.replace(/^[,.\-\s]+|[,.\-\s]+$/g, "").trim();
+}
+function parseNameTokens(name) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2)
+    return null;
+  const first = parts[0].replace(/\./g, "").toLowerCase();
+  const last = parts[parts.length - 1].replace(/\./g, "").toLowerCase();
+  const middle = parts.slice(1, -1).map((m7) => m7.replace(/\./g, "").toLowerCase());
+  return { first, middle, last };
+}
+function areAuthorsEquivalent(nameA, nameB) {
+  const normA = nameA.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+  const normB = nameB.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+  if (normA === normB)
+    return true;
+  const tokA = parseNameTokens(nameA);
+  const tokB = parseNameTokens(nameB);
+  if (!tokA || !tokB)
+    return false;
+  if (tokA.last !== tokB.last)
+    return false;
+  const firstMatch = tokA.first === tokB.first || tokA.first.length === 1 && tokB.first.startsWith(tokA.first) || tokB.first.length === 1 && tokA.first.startsWith(tokB.first);
+  if (!firstMatch)
+    return false;
+  if (tokA.middle.length > 0 && tokB.middle.length > 0) {
+    const mA3 = tokA.middle[0];
+    const mB2 = tokB.middle[0];
+    if (mA3[0] !== mB2[0])
+      return false;
+  }
+  return true;
+}
+function normalizeAndDeduplicateAuthors(rawAuthors, existingCanonicalAuthors = []) {
+  let rawList;
+  if (Array.isArray(rawAuthors)) {
+    rawList = rawAuthors;
+  } else if (/[;\n]/.test(rawAuthors)) {
+    rawList = rawAuthors.split(/[;&\n]+/);
+  } else {
+    const commaParts = rawAuthors.split(",").map((s) => s.trim()).filter(Boolean);
+    const isSingleLastFirst = commaParts.length === 2 && !/\band\b/i.test(rawAuthors) && commaParts[0].split(/\s+/).length === 1 && commaParts[1].split(/\s+/).length <= 2;
+    if (isSingleLastFirst) {
+      rawList = [rawAuthors];
+    } else {
+      rawList = rawAuthors.replace(/\band\b/gi, ",").split(/[,&\n]+/);
+    }
+  }
+  const candidates = rawList.map(cleanSingleAuthorName).filter((name) => name.length >= 2 && !/^(unknown|et al\.?|others|n\/a)$/i.test(name));
+  if (candidates.length === 0)
+    return "Unknown";
+  const deduplicated = [];
+  for (const candidate of candidates) {
+    let bestName = candidate;
+    for (const existing of existingCanonicalAuthors) {
+      if (areAuthorsEquivalent(bestName, existing)) {
+        const cleanCandidateLen = bestName.replace(/\./g, "").length;
+        const cleanExistingLen = existing.replace(/\./g, "").length;
+        bestName = cleanExistingLen >= cleanCandidateLen ? existing : bestName;
+        break;
+      }
+    }
+    const existingIdx = deduplicated.findIndex((already) => areAuthorsEquivalent(bestName, already));
+    if (existingIdx !== -1) {
+      const already = deduplicated[existingIdx];
+      if (bestName.replace(/\./g, "").length > already.replace(/\./g, "").length) {
+        deduplicated[existingIdx] = bestName;
+      }
+    } else {
+      deduplicated.push(bestName);
+    }
+  }
+  return deduplicated.length > 0 ? deduplicated.join(", ") : "Unknown";
+}
+function resolveConsistentTopicFolder(candidateTopic, existingFolders) {
+  const cleaned = sanitizeTopicFolder(candidateTopic);
+  if (!cleaned || /^uncategorized$/i.test(cleaned))
+    return "Uncategorized";
+  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "").replace(/s$/, "");
+  const targetNorm = norm(cleaned);
+  for (const folder of existingFolders) {
+    if (!folder || /^uncategorized$/i.test(folder))
+      continue;
+    if (norm(folder) === targetNorm) {
+      return folder;
+    }
+  }
+  return cleaned.split(" ").map((w) => w.length > 2 || w === cleaned.split(" ")[0] ? w.charAt(0).toUpperCase() + w.slice(1) : w.toLowerCase()).join(" ");
+}
+var HEADER_BOILERPLATE_REGEX = /\b(copyright|isbn|issn|doi:|arxiv:|proceedings of|permission to|reproduce|attribution|hereby grants|all rights reserved|preprint|submitted to|published in|vol\.|volume \d+|issue \d+)\b/i;
+var AFFILIATION_OR_NON_PERSON_REGEX = /\b(university|universit[aàäéèê]|institut[eo]?|department|faculty|center|centre|laboratory|labs?|research|foundation|academy|college|school|hospital|clinic|ministry|agency|association|society|corporation|inc\.|corp\.|ltd\.|llc|gmbh|group|division|team|abstract|introduction|contents|chapter|preface|copyright|isbn|issn|doi|arxiv|proceedings|conference|symposium|workshop|transactions|journal|volume|issue|preprint|submitted|published|permission|reproduce|attribution|hereby|grants|equal contribution)\b/i;
+function inferTitleAndAuthorsFromHeader(rawText) {
+  const firstPage = rawText.split(/-- 1 of \d+ --/)[0] || rawText.slice(0, 3e3);
+  const beforeAbstract = firstPage.split(/(?:^|\n)\s*(?:Abstract|1\.?\s+Introduction|Contents|Table of Contents)\b/i)[0] || firstPage.slice(0, 1500);
+  const lines = beforeAbstract.split("\n").map((l) => l.trim()).filter((l) => l.length > 2 && !/@/.test(l) && !/^https?:\/\//i.test(l));
+  const cleanLines = lines.filter((l) => !HEADER_BOILERPLATE_REGEX.test(l));
+  let inferredTitle;
+  let titleIdx = -1;
+  for (let i = 0; i < Math.min(cleanLines.length, 6); i++) {
+    const line = cleanLines[i];
+    if (line.length >= 6 && line.length <= 140 && !/^\d+$/.test(line)) {
+      inferredTitle = line.replace(/[∗*†‡]+$/g, "").trim();
+      titleIdx = lines.indexOf(line);
+      break;
+    }
+  }
+  const authorCandidates = [];
+  const startIdx = titleIdx !== -1 ? titleIdx + 1 : 1;
+  for (let i = startIdx; i < lines.length; i++) {
+    const line = lines[i];
+    if (AFFILIATION_OR_NON_PERSON_REGEX.test(line))
+      continue;
+    if (/@/.test(line))
+      continue;
+    const segments = line.replace(/\band\b/gi, ",").split(/[,;]+/).map(cleanSingleAuthorName).filter(Boolean);
+    for (const seg of segments) {
+      const words = seg.split(/\s+/);
+      if (words.length >= 2 && words.length <= 4 && words.every((w) => /^[A-ZŁŚŻŹĆŃÓÁÉÍÓÚÄÖÜ][a-zA-Z0-9.\-łśżźćńóáéíóúäöü']*$/.test(w)) && !AFFILIATION_OR_NON_PERSON_REGEX.test(seg)) {
+        authorCandidates.push(seg);
+      }
+    }
+  }
+  return {
+    inferredTitle,
+    inferredAuthors: authorCandidates.length > 0 ? authorCandidates.join(", ") : void 0
+  };
+}
+function parseAcademicStructure(rawText) {
+  const cleanText = rawText.replace(/\r\n/g, "\n");
+  let abstractText = "";
+  const absMatch = cleanText.match(/(?:^|\n)\s*(?:Abstract|Executive Summary|Overview|Preface)\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:1\.?\s+Introduction|I\.?\s+Introduction|Chapter\s+1|Keywords|Index Terms|-- 1 of|\n\n\d+\s+[A-Z]))/i);
+  if (absMatch) {
+    abstractText = absMatch[1].split("\n").filter((line) => !/^[∗†‡§]\s*(Equal contribution|Work performed|Corresponding author)/i.test(line.trim())).filter((line) => !/\b(Proceedings of|Conference on|Symposium on|Transactions on|arXiv:|DOI:)\b/i.test(line.trim())).join(" ").replace(/\s+/g, " ").trim();
+  }
+  const sectionTitles = [];
+  const seenSections = /* @__PURE__ */ new Set();
+  const lines = cleanText.split("\n");
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line.length < 4 || line.length > 90)
+      continue;
+    const chapMatch = line.match(/^(?:Chapter|Part|Section)\s+(\d+|[IVXLCDM]+)[:.\-\s]+([A-Z][A-Za-z0-9\s\-:,()]+)$/i);
+    const secMatch = line.match(/^(\d+(?:\.\d+){0,2})\.?\s+([A-Z][A-Za-z0-9\s\-:,()]+)$/);
+    if (chapMatch) {
+      const heading = `Chapter ${chapMatch[1]}: ${chapMatch[2].trim()}`;
+      const norm = heading.toLowerCase();
+      if (!seenSections.has(norm)) {
+        seenSections.add(norm);
+        sectionTitles.push(heading);
+      }
+    } else if (secMatch) {
+      const num = secMatch[1];
+      const topNum = parseInt(num.split(".")[0], 10);
+      if (topNum >= 1 && topNum <= 30) {
+        const heading = `${num} ${secMatch[2].trim()}`;
+        const norm = heading.toLowerCase();
+        if (!seenSections.has(norm)) {
+          seenSections.add(norm);
+          sectionTitles.push(heading);
+        }
+      }
+    }
+  }
+  let conclusionsText = "";
+  const concMatch = cleanText.match(/(?:^|\n)\s*(?:\d+\.?\s+)?(?:Conclusions?|Summary and Conclusions|Concluding Remarks)(?:\s+and\s+Future\s+Work)?\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:Acknowledgements?|Acknowledgments?|References|Bibliography|Appendix|-- \d+ of))/i);
+  if (concMatch) {
+    conclusionsText = concMatch[1].replace(/\n-- \d+ of \d+ --\n/g, " ").replace(/\s+/g, " ").trim();
+  }
+  const { inferredTitle, inferredAuthors } = inferTitleAndAuthorsFromHeader(cleanText);
+  return {
+    abstractText,
+    sectionTitles,
+    conclusionsText,
+    inferredTitle,
+    inferredAuthors
+  };
+}
+async function extractPdfTextAndInfo(buffer) {
+  const pdfjsLib = await (0, import_obsidian3.loadPdfJs)();
+  const loadingTask = pdfjsLib.getDocument(buffer.slice(0));
+  const doc = await loadingTask.promise;
+  try {
+    let infoTitle;
+    let infoAuthor;
+    try {
+      const meta = await doc.getMetadata();
+      if (meta?.info?.Title && typeof meta.info.Title === "string") {
+        infoTitle = meta.info.Title.trim();
+      }
+      if (meta?.info?.Author && typeof meta.info.Author === "string") {
+        infoAuthor = meta.info.Author.trim();
+      }
+    } catch {
+    }
+    const totalPages = doc.numPages || 0;
+    const pageTexts = [];
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      const page = await doc.getPage(pageNum);
+      const textContent = await page.getTextContent();
+      const items = textContent?.items || [];
+      let pageStr = "";
+      for (const item of items) {
+        if ("str" in item) {
+          pageStr += item.str + (item.hasEOL ? "\n" : " ");
+        }
+      }
+      pageTexts.push(`${pageStr.trim()}
+-- ${pageNum} of ${totalPages} --`);
+      if (typeof page.cleanup === "function") {
+        page.cleanup();
+      }
+    }
+    const fullText = pageTexts.join("\n\n").trim();
+    const structure = parseAcademicStructure(fullText);
+    return {
+      text: fullText,
+      totalPages,
+      infoTitle,
+      infoAuthor,
+      inferredTitle: structure.inferredTitle,
+      inferredAuthors: structure.inferredAuthors,
+      abstractText: structure.abstractText,
+      sectionTitles: structure.sectionTitles,
+      conclusionsText: structure.conclusionsText
+    };
+  } finally {
+    if (typeof doc.destroy === "function") {
+      await doc.destroy();
+    }
+  }
+}
+async function getExistingLibraryTaxonomy(app) {
+  const catalog = await listLibraryCatalog(app);
+  const folderSet = /* @__PURE__ */ new Set();
+  const authorList = [];
+  if (await app.vault.adapter.exists(LIBRARY_DIR)) {
+    const listed = await app.vault.adapter.list(LIBRARY_DIR);
+    for (const f7 of listed.folders) {
+      const rel = f7.slice(LIBRARY_DIR.length + 1);
+      if (rel && !rel.startsWith(".") && !/^uncategorized$/i.test(rel)) {
+        folderSet.add(rel);
+      }
+    }
+  }
+  for (const entry of catalog) {
+    if (entry.topicFolder && !/^uncategorized$/i.test(entry.topicFolder)) {
+      folderSet.add(entry.topicFolder);
+    }
+    if (entry.authors && entry.authors !== "Unknown") {
+      const split = entry.authors.split(",").map((a7) => cleanSingleAuthorName(a7)).filter(Boolean);
+      for (const a7 of split) {
+        const existingIdx = authorList.findIndex((ex2) => areAuthorsEquivalent(a7, ex2));
+        if (existingIdx !== -1) {
+          if (a7.replace(/\./g, "").length > authorList[existingIdx].replace(/\./g, "").length) {
+            authorList[existingIdx] = a7;
+          }
+        } else {
+          authorList.push(a7);
+        }
+      }
+    }
+  }
+  return {
+    topicFolders: Array.from(folderSet),
+    canonicalAuthors: authorList
+  };
+}
+async function saveAndIndexDocument(app, options) {
+  await ensureVaultFolder(app, LIBRARY_DIR);
+  await ensureVaultFolder(app, LIBRARY_INDEX_DIR);
+  const taxonomy = await getExistingLibraryTaxonomy(app);
+  const extMatch = options.filename.match(/\.(pdf|docx|md|txt)$/i);
+  const ext = extMatch ? extMatch[1].toLowerCase() : "pdf";
+  const rawBaseName = options.filename.replace(/\.(pdf|docx|md|txt)$/i, "");
+  const docKind = options.docKind || "Paper";
+  let extractedText = "";
+  let totalPages = 1;
+  let detectedTitle = options.title?.trim() || "";
+  let detectedAuthors = options.authors?.trim() || "";
+  let abstractText = "";
+  let sectionTitles = [];
+  let conclusionsText = "";
+  if (ext === "pdf") {
+    const pdfData = await extractPdfTextAndInfo(options.buffer.slice(0));
+    extractedText = pdfData.text;
+    totalPages = pdfData.totalPages;
+    abstractText = pdfData.abstractText;
+    sectionTitles = pdfData.sectionTitles;
+    conclusionsText = pdfData.conclusionsText;
+    if (!detectedTitle) {
+      detectedTitle = pdfData.infoTitle && pdfData.infoTitle.length > 2 ? pdfData.infoTitle : pdfData.inferredTitle || "";
+    }
+    if (!detectedAuthors) {
+      detectedAuthors = pdfData.infoAuthor && pdfData.infoAuthor.length > 1 ? pdfData.infoAuthor : pdfData.inferredAuthors || "";
+    }
+  } else if (ext === "md" || ext === "txt") {
+    extractedText = new TextDecoder("utf-8").decode(options.buffer.slice(0));
+    const structure = parseAcademicStructure(extractedText);
+    abstractText = structure.abstractText;
+    sectionTitles = structure.sectionTitles;
+    conclusionsText = structure.conclusionsText;
+    if (!detectedTitle && structure.inferredTitle)
+      detectedTitle = structure.inferredTitle;
+    if (!detectedAuthors && structure.inferredAuthors)
+      detectedAuthors = structure.inferredAuthors;
+  }
+  const finalTitle = detectedTitle || rawBaseName.replace(/_/g, " ") || "Untitled Document";
+  const finalAuthors = normalizeAndDeduplicateAuthors(detectedAuthors || "Unknown", taxonomy.canonicalAuthors);
+  const resolvedTopic = options.topicFolder ? resolveConsistentTopicFolder(options.topicFolder, taxonomy.topicFolders) : "";
+  const subject = (options.subject || resolvedTopic || "general").toLowerCase().trim();
+  const safeBase = sanitizeFileName(finalTitle || rawBaseName);
+  const targetFolder = resolvedTopic && resolvedTopic !== "Uncategorized" ? `${LIBRARY_DIR}/${resolvedTopic}` : LIBRARY_DIR;
+  await ensureVaultFolder(app, targetFolder);
+  const filePath = `${targetFolder}/${safeBase}.${ext}`;
+  await writeVaultBinary(app, filePath, options.buffer);
+  const defaultTags = [
+    sanitizeTag(docKind),
+    sanitizeTag(subject),
+    sanitizeTag(ext)
+  ].filter(Boolean);
+  const cleanedInputTags = (options.tags || []).map(sanitizeTag).filter(Boolean);
+  const allTags = Array.from(/* @__PURE__ */ new Set([...cleanedInputTags, ...defaultTags]));
+  const indexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
+  const indexMarkdown = buildIndexMarkdown({
+    title: finalTitle,
+    authors: finalAuthors,
+    docKind,
+    subject,
+    topicFolder: resolvedTopic || "Uncategorized",
+    tags: allTags,
+    type: ext.toUpperCase(),
+    pages: totalPages,
+    sourceUrl: options.sourceUrl || "",
+    filePath,
+    abstractText,
+    sectionTitles,
+    summary: options.summary || "",
+    conclusionsText
+  });
+  await app.vault.adapter.write(indexPath, indexMarkdown);
+  return {
+    filePath,
+    indexPath,
+    docKind,
+    title: finalTitle,
+    authors: finalAuthors,
+    subject,
+    topicFolder: resolvedTopic || "Uncategorized",
+    totalPages,
+    totalChars: extractedText.length,
+    abstractText,
+    sectionTitles,
+    conclusionsText,
+    textPreview: extractedText.substring(0, 6e3)
+  };
+}
+function buildIndexMarkdown(fields) {
+  const docKind = fields.docKind || "Paper";
+  const cleanedTags = (fields.tags || []).map(sanitizeTag).filter(Boolean);
+  const tagLines = cleanedTags.length > 0 ? Array.from(new Set(cleanedTags)).map((t) => `  - ${t}`).join("\n") : "  - research";
+  const sectionsHeading = docKind === "Book" ? "## Chapters & Table of Contents" : docKind === "Document" ? "## Key Sections & Outline" : "## Section Titles";
+  const abstractHeading = docKind === "Book" ? "## Book Overview" : docKind === "Document" ? "## Overview" : "## Abstract";
+  const sectionsList = fields.sectionTitles && fields.sectionTitles.length > 0 ? fields.sectionTitles.map((s) => `- ${s}`).join("\n") : "- *(No numbered sections detected)*";
+  const blocks = [
+    "---",
+    `title: "${fields.title.replace(/"/g, '\\"')}"`,
+    `authors: "${fields.authors.replace(/"/g, '\\"')}"`,
+    `doc_kind: "${docKind}"`,
+    `subject: "${fields.subject.toLowerCase()}"`,
+    `topic_folder: "${fields.topicFolder.replace(/"/g, '\\"')}"`,
+    "tags:",
+    tagLines,
+    `type: "${fields.type}"`,
+    `pages: ${fields.pages}`,
+    `source_url: "${fields.sourceUrl}"`,
+    `file_path: "${fields.filePath}"`,
+    `indexed_at: "${(/* @__PURE__ */ new Date()).toISOString()}"`,
+    "---",
+    "",
+    `# ${fields.title}`,
+    "",
+    `- **Document Kind**: ${docKind}`,
+    `- **Original File**: [[${fields.filePath}|${fields.filePath.split("/").pop()}]]`,
+    `- **Topic Folder**: ${fields.topicFolder}`,
+    `- **Subject**: ${fields.subject}`,
+    `- **Authors**: ${fields.authors}`,
+    `- **Pages**: ${fields.pages}`,
+    fields.sourceUrl ? `- **Source URL**: ${fields.sourceUrl}` : "",
+    ""
+  ];
+  if (fields.abstractText && fields.abstractText.trim()) {
+    blocks.push(abstractHeading, fields.abstractText.trim(), "");
+  }
+  if (fields.summary && fields.summary.trim()) {
+    blocks.push("## Summary & Key Takeaways", fields.summary.trim(), "");
+  }
+  blocks.push(sectionsHeading, sectionsList, "");
+  if (fields.conclusionsText && fields.conclusionsText.trim()) {
+    blocks.push("## Conclusions", fields.conclusionsText.trim(), "");
+  }
+  return blocks.filter((line) => line !== void 0).join("\n").trim() + "\n";
+}
+function parseFrontmatter(mdContent) {
+  const match = mdContent.match(/^---\n([\s\S]*?)\n---/);
+  if (!match)
+    return {};
+  const yaml = match[1];
+  const result = {};
+  const lines = yaml.split("\n");
+  let currentListKey = null;
+  for (const line of lines) {
+    if (/^\s*-\s+(.+)$/.test(line) && currentListKey) {
+      const val = line.replace(/^\s*-\s+/, "").trim();
+      result[currentListKey].push(val);
+      continue;
+    }
+    currentListKey = null;
+    const kv3 = line.match(/^([a-zA-Z0-9_]+):\s*(.*)$/);
+    if (kv3) {
+      const key = kv3[1];
+      const rawVal = kv3[2].trim();
+      if (!rawVal) {
+        currentListKey = key;
+        result[key] = [];
+      } else {
+        result[key] = rawVal.replace(/^["']|["']$/g, "");
+      }
+    }
+  }
+  return result;
+}
+function extractMarkdownSection(mdContent, heading) {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, "i");
+  const m7 = mdContent.match(regex);
+  return m7 ? m7[1].trim() : "";
+}
+async function listFilesRecursive(app, folderPath) {
+  const exists = await app.vault.adapter.exists(folderPath);
+  if (!exists)
+    return [];
+  const listed = await app.vault.adapter.list(folderPath);
+  let results = [...listed.files];
+  for (const sub of listed.folders) {
+    const subFiles = await listFilesRecursive(app, sub);
+    results = results.concat(subFiles);
+  }
+  return results;
+}
+async function listLibraryCatalog(app) {
+  await ensureVaultFolder(app, LIBRARY_DIR);
+  await ensureVaultFolder(app, LIBRARY_INDEX_DIR);
+  const entriesMap = /* @__PURE__ */ new Map();
+  const indexFiles = await listFilesRecursive(app, LIBRARY_INDEX_DIR);
+  for (const idxPath of indexFiles) {
+    if (!idxPath.endsWith(".md"))
+      continue;
+    try {
+      const content = await app.vault.adapter.read(idxPath);
+      const fm2 = parseFrontmatter(content);
+      const baseName = idxPath.split("/").pop().replace(/\.md$/i, "");
+      const filePath = fm2.file_path || "";
+      entriesMap.set(baseName.toLowerCase(), {
+        title: fm2.title || baseName.replace(/_/g, " "),
+        authors: fm2.authors || "Unknown",
+        docKind: fm2.doc_kind || "Paper",
+        subject: fm2.subject || "general",
+        topicFolder: fm2.topic_folder || "Uncategorized",
+        type: fm2.type || "PDF",
+        pages: Number(fm2.pages) || 1,
+        filePath,
+        indexPath: idxPath,
+        tags: Array.isArray(fm2.tags) ? fm2.tags : []
+      });
+    } catch {
+    }
+  }
+  const rawFiles = await listFilesRecursive(app, LIBRARY_DIR);
+  for (const rawPath of rawFiles) {
+    const fileName = rawPath.split("/").pop() || "";
+    if (fileName.startsWith("."))
+      continue;
+    const baseName = fileName.replace(/\.[^.]+$/, "");
+    const key = baseName.toLowerCase();
+    const rel = rawPath.slice(LIBRARY_DIR.length + 1);
+    const relParts = rel.split("/");
+    const topicFolder = relParts.length > 1 ? relParts.slice(0, -1).join("/") : "Uncategorized";
+    const ext = fileName.split(".").pop()?.toUpperCase() || "FILE";
+    const existing = entriesMap.get(key);
+    if (existing) {
+      existing.filePath = rawPath;
+      if (topicFolder !== "Uncategorized") {
+        existing.topicFolder = topicFolder;
+      }
+    } else {
+      entriesMap.set(key, {
+        title: baseName.replace(/_/g, " "),
+        authors: "Unknown",
+        docKind: "Paper",
+        subject: topicFolder.toLowerCase(),
+        topicFolder,
+        type: ext,
+        pages: 1,
+        filePath: rawPath,
+        indexPath: "",
+        tags: []
+      });
+    }
+  }
+  return Array.from(entriesMap.values());
+}
+
 // src/views/history-view.ts
 var VIEW_TYPE_HISTORY = "dyresearch-history-view";
-var HistoryView = class extends import_obsidian3.ItemView {
+var HistoryView = class extends import_obsidian4.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
   }
   activeTab = "chat";
   searchQuery = "";
+  libSearchQuery = "";
+  libKindFilter = "";
+  libTopicFilter = "";
+  libAuthorFilter = "";
   getViewType() {
     return VIEW_TYPE_HISTORY;
   }
@@ -493,7 +1084,7 @@ var HistoryView = class extends import_obsidian3.ItemView {
       cls: "dy-new-chat-btn",
       attr: { "aria-label": "New chat session" }
     });
-    (0, import_obsidian3.setIcon)(newChatBtn, "plus");
+    (0, import_obsidian4.setIcon)(newChatBtn, "plus");
     newChatBtn.onClickEvent(async () => {
       await this.plugin.startNewSession();
     });
@@ -543,12 +1134,12 @@ var HistoryView = class extends import_obsidian3.ItemView {
             cls: "dy-edit-btn",
             attr: { "aria-label": "Rename session" }
           });
-          (0, import_obsidian3.setIcon)(editBtn, "pencil");
+          (0, import_obsidian4.setIcon)(editBtn, "pencil");
           const deleteBtn = actionsGroup.createEl("button", {
             cls: "dy-delete-btn",
             attr: { "aria-label": "Delete session" }
           });
-          (0, import_obsidian3.setIcon)(deleteBtn, "trash");
+          (0, import_obsidian4.setIcon)(deleteBtn, "trash");
           const date = new Date(item.updatedAt).toLocaleDateString();
           sessionEl.createEl("small", { text: `Last activity: ${date}`, cls: "session-date" });
           sessionEl.onClickEvent(async (e) => {
@@ -588,7 +1179,7 @@ var HistoryView = class extends import_obsidian3.ItemView {
                     this.plugin.currentSessionId = newId;
                   }
                   this.refreshView();
-                  new import_obsidian3.Notice("Session renamed successfully.");
+                  new import_obsidian4.Notice("Session renamed successfully.");
                 } catch (err) {
                   nameEl.setText(item.sessionId);
                   editBtn.style.display = "flex";
@@ -612,9 +1203,9 @@ var HistoryView = class extends import_obsidian3.ItemView {
                 this.plugin.currentSessionId = `obsidian_${Date.now()}`;
               }
               this.refreshView();
-              new import_obsidian3.Notice("Session deleted.");
+              new import_obsidian4.Notice("Session deleted.");
             } catch (err) {
-              new import_obsidian3.Notice("Failed to delete session.");
+              new import_obsidian4.Notice("Failed to delete session.");
             }
           });
         });
@@ -666,7 +1257,7 @@ var HistoryView = class extends import_obsidian3.ItemView {
         topicHintInput.value = "";
         this.refreshView();
       } catch (err) {
-        new import_obsidian3.Notice("Upload failed.");
+        new import_obsidian4.Notice("Upload failed.");
       } finally {
         uploadBtn.setText("\u{1F4C1} Select & Index File(s)");
         uploadBtn.disabled = false;
@@ -678,47 +1269,232 @@ var HistoryView = class extends import_obsidian3.ItemView {
     await this.renderUploadSection(container);
     const libContainer = container.createDiv({ cls: "library-container" });
     const libHeader = libContainer.createDiv({ cls: "history-header" });
-    libHeader.createEl("h4", { text: "Files in Library" });
+    const headerTitle = libHeader.createEl("h4", { text: "Files in Library" });
+    const clearFiltersBtn = libHeader.createEl("button", {
+      text: "\u2715 Clear filters",
+      cls: "dy-clear-filters-btn"
+    });
+    clearFiltersBtn.style.display = "none";
+    const filterBox = libContainer.createDiv({ cls: "dy-library-filters" });
+    const searchInput = filterBox.createEl("input", {
+      type: "text",
+      placeholder: "\u{1F50D} Search title, author, topic, or tag...",
+      cls: "dy-lib-search-input"
+    });
+    searchInput.value = this.libSearchQuery;
+    const filterSelectRow = filterBox.createDiv({ cls: "dy-lib-filter-row" });
+    const kindSelect = filterSelectRow.createEl("select", {
+      cls: "dy-lib-filter-select",
+      attr: { "aria-label": "Filter by document kind" }
+    });
+    kindSelect.createEl("option", { value: "", text: "All Types" });
+    kindSelect.createEl("option", { value: "Paper", text: "\u{1F4C4} Paper" });
+    kindSelect.createEl("option", { value: "Book", text: "\u{1F4D8} Book" });
+    kindSelect.createEl("option", { value: "Document", text: "\u{1F4D1} Document" });
+    kindSelect.value = this.libKindFilter;
+    const topicSelect = filterSelectRow.createEl("select", {
+      cls: "dy-lib-filter-select",
+      attr: { "aria-label": "Filter by topic" }
+    });
+    topicSelect.createEl("option", { value: "", text: "All Topics" });
+    const authorSelect = filterSelectRow.createEl("select", {
+      cls: "dy-lib-filter-select",
+      attr: { "aria-label": "Filter by author" }
+    });
+    authorSelect.createEl("option", { value: "", text: "All Authors" });
     const list = libContainer.createDiv({ cls: "library-list" });
     const loadDocs = async () => {
       const loadingNotice = list.createEl("p", { text: "Loading...", cls: "loading-text" });
       try {
-        const files = await this.plugin.engine.getLibraryFiles();
+        const allFiles = await this.plugin.engine.getLibraryFiles();
         loadingNotice.remove();
-        files.forEach((doc) => {
-          const card = list.createDiv({ cls: "library-card" });
-          const header = card.createDiv({ cls: "library-card-header" });
-          const titleInfo = header.createDiv({ cls: "library-title-group" });
-          titleInfo.createEl("strong", { text: doc.title });
-          if (doc.docKind) {
-            titleInfo.createEl("span", { text: doc.docKind, cls: "badge-kind" });
-          }
-          titleInfo.createEl("span", { text: doc.type, cls: "badge-type" });
-          const libDeleteBtn = header.createEl("button", {
-            cls: "dy-delete-btn-small",
-            attr: { "aria-label": "Delete document" }
-          });
-          (0, import_obsidian3.setIcon)(libDeleteBtn, "trash");
-          libDeleteBtn.onClickEvent(async (e) => {
-            e.stopPropagation();
-            if (!confirm(`Delete "${doc.title}" from Library and Library Index?`))
-              return;
-            await this.plugin.engine.deleteLibraryFile(doc.title);
-            this.refreshView();
-          });
-          card.createEl("div", { text: `\u{1F4C1} ${doc.topicFolder || doc.subject}`, cls: "library-meta" });
-          card.createEl("div", { text: `\u{1F464} ${doc.authors} \u2022 \u{1F4C4} ${doc.pages || 1} p.`, cls: "library-meta" });
-          card.style.cursor = "pointer";
-          card.onClickEvent(async () => {
-            const targetPath = doc.indexPath || doc.filePath;
-            if (targetPath) {
-              await this.app.workspace.openLinkText(targetPath, "", false);
+        const topicsSet = /* @__PURE__ */ new Set();
+        const authorsList = [];
+        for (const doc of allFiles) {
+          const topic = doc.topicFolder && doc.topicFolder !== "Uncategorized" ? doc.topicFolder : doc.subject;
+          if (topic)
+            topicsSet.add(topic);
+          if (doc.authors && doc.authors !== "Unknown") {
+            const splitAuthors = doc.authors.split(",").map((a7) => cleanSingleAuthorName(a7)).filter(Boolean);
+            for (const a7 of splitAuthors) {
+              const existingIdx = authorsList.findIndex((ex2) => areAuthorsEquivalent(a7, ex2));
+              if (existingIdx !== -1) {
+                if (a7.replace(/\./g, "").length > authorsList[existingIdx].replace(/\./g, "").length) {
+                  authorsList[existingIdx] = a7;
+                }
+              } else {
+                authorsList.push(a7);
+              }
             }
-          });
-        });
-        if (files.length === 0) {
-          list.createEl("p", { text: "No documents found in Library.", cls: "dy-empty-list-text" });
+          }
         }
+        Array.from(topicsSet).sort((a7, b) => a7.localeCompare(b)).forEach((t) => {
+          topicSelect.createEl("option", { value: t, text: `\u{1F4C1} ${t}` });
+        });
+        topicSelect.value = topicsSet.has(this.libTopicFilter) ? this.libTopicFilter : "";
+        this.libTopicFilter = topicSelect.value;
+        authorsList.sort((a7, b) => a7.localeCompare(b)).forEach((a7) => {
+          authorSelect.createEl("option", { value: a7, text: `\u{1F464} ${a7}` });
+        });
+        authorSelect.value = authorsList.includes(this.libAuthorFilter) ? this.libAuthorFilter : "";
+        this.libAuthorFilter = authorSelect.value;
+        const renderFilteredList = () => {
+          list.empty();
+          const query = this.libSearchQuery.trim().toLowerCase();
+          const kind = this.libKindFilter;
+          const topic = this.libTopicFilter.toLowerCase();
+          const author = this.libAuthorFilter;
+          const hasActiveFilter = Boolean(query || kind || topic || author);
+          clearFiltersBtn.style.display = hasActiveFilter ? "inline-flex" : "none";
+          const filtered = allFiles.filter((doc) => {
+            if (kind && doc.docKind !== kind && doc.type.toLowerCase() !== kind.toLowerCase()) {
+              return false;
+            }
+            if (topic) {
+              const docTopic = (doc.topicFolder || "").toLowerCase();
+              const docSubj = (doc.subject || "").toLowerCase();
+              if (docTopic !== topic && docSubj !== topic && !docTopic.includes(topic)) {
+                return false;
+              }
+            }
+            if (author) {
+              const docAuthors = (doc.authors || "").split(",").map((a7) => cleanSingleAuthorName(a7)).filter(Boolean);
+              const matched = doc.authors.toLowerCase().includes(author.toLowerCase()) || docAuthors.some((a7) => areAuthorsEquivalent(a7, author));
+              if (!matched)
+                return false;
+            }
+            if (query) {
+              const haystack = [
+                doc.title,
+                doc.authors,
+                doc.topicFolder,
+                doc.subject,
+                doc.docKind,
+                doc.type,
+                ...doc.tags || []
+              ].join(" ").toLowerCase();
+              const terms = query.split(/\s+/).filter(Boolean);
+              if (!terms.every((term) => haystack.includes(term))) {
+                return false;
+              }
+            }
+            return true;
+          });
+          headerTitle.setText(
+            hasActiveFilter ? `Files in Library (${filtered.length} / ${allFiles.length})` : `Files in Library (${allFiles.length})`
+          );
+          filtered.forEach((doc) => {
+            const card = list.createDiv({ cls: "library-card" });
+            const header = card.createDiv({ cls: "library-card-header" });
+            const titleInfo = header.createDiv({ cls: "library-title-group" });
+            titleInfo.createEl("strong", { text: doc.title });
+            if (doc.docKind) {
+              const kindBadge = titleInfo.createEl("span", {
+                text: doc.docKind,
+                cls: "badge-kind is-clickable-filter",
+                attr: { title: `Filter by ${doc.docKind}` }
+              });
+              kindBadge.onClickEvent((e) => {
+                e.stopPropagation();
+                this.libKindFilter = this.libKindFilter === doc.docKind ? "" : doc.docKind;
+                kindSelect.value = this.libKindFilter;
+                renderFilteredList();
+              });
+            }
+            titleInfo.createEl("span", { text: doc.type, cls: "badge-type" });
+            const libDeleteBtn = header.createEl("button", {
+              cls: "dy-delete-btn-small",
+              attr: { "aria-label": "Delete document" }
+            });
+            (0, import_obsidian4.setIcon)(libDeleteBtn, "trash");
+            libDeleteBtn.onClickEvent(async (e) => {
+              e.stopPropagation();
+              if (!confirm(`Delete "${doc.title}" from Library and Library Index?`))
+                return;
+              await this.plugin.engine.deleteLibraryFile(doc.title);
+              this.refreshView();
+            });
+            const displayTopic = doc.topicFolder && doc.topicFolder !== "Uncategorized" ? doc.topicFolder : doc.subject;
+            const topicRow = card.createDiv({ cls: "library-meta" });
+            const topicChip = topicRow.createEl("span", {
+              text: `\u{1F4C1} ${displayTopic}`,
+              cls: "dy-meta-chip",
+              attr: { title: `Filter by topic: ${displayTopic}` }
+            });
+            topicChip.onClickEvent((e) => {
+              e.stopPropagation();
+              this.libTopicFilter = this.libTopicFilter === displayTopic ? "" : displayTopic;
+              topicSelect.value = this.libTopicFilter;
+              renderFilteredList();
+            });
+            const authorRow = card.createDiv({ cls: "library-meta" });
+            authorRow.createSpan({ text: "\u{1F464} " });
+            const docAuthorList = (doc.authors || "Unknown").split(",").map((a7) => a7.trim()).filter(Boolean);
+            docAuthorList.forEach((authName, idx) => {
+              if (authName !== "Unknown") {
+                const authChip = authorRow.createEl("span", {
+                  text: authName,
+                  cls: "dy-meta-chip",
+                  attr: { title: `Filter by author: ${authName}` }
+                });
+                authChip.onClickEvent((e) => {
+                  e.stopPropagation();
+                  const canonical = authorsList.find((ex2) => areAuthorsEquivalent(authName, ex2)) || authName;
+                  this.libAuthorFilter = this.libAuthorFilter === canonical ? "" : canonical;
+                  authorSelect.value = this.libAuthorFilter;
+                  renderFilteredList();
+                });
+              } else {
+                authorRow.createSpan({ text: authName });
+              }
+              if (idx < docAuthorList.length - 1) {
+                authorRow.createSpan({ text: ", " });
+              }
+            });
+            authorRow.createSpan({ text: ` \u2022 \u{1F4C4} ${doc.pages || 1} p.` });
+            card.style.cursor = "pointer";
+            card.onClickEvent(async () => {
+              const targetPath = doc.indexPath || doc.filePath;
+              if (targetPath) {
+                await this.app.workspace.openLinkText(targetPath, "", false);
+              }
+            });
+          });
+          if (filtered.length === 0) {
+            list.createEl("p", {
+              text: allFiles.length === 0 ? "No documents found in Library." : "No documents match the current search or filters.",
+              cls: "dy-empty-list-text"
+            });
+          }
+        };
+        searchInput.addEventListener("input", () => {
+          this.libSearchQuery = searchInput.value;
+          renderFilteredList();
+        });
+        kindSelect.addEventListener("change", () => {
+          this.libKindFilter = kindSelect.value;
+          renderFilteredList();
+        });
+        topicSelect.addEventListener("change", () => {
+          this.libTopicFilter = topicSelect.value;
+          renderFilteredList();
+        });
+        authorSelect.addEventListener("change", () => {
+          this.libAuthorFilter = authorSelect.value;
+          renderFilteredList();
+        });
+        clearFiltersBtn.onClickEvent(() => {
+          this.libSearchQuery = "";
+          this.libKindFilter = "";
+          this.libTopicFilter = "";
+          this.libAuthorFilter = "";
+          searchInput.value = "";
+          kindSelect.value = "";
+          topicSelect.value = "";
+          authorSelect.value = "";
+          renderFilteredList();
+        });
+        renderFilteredList();
       } catch (err) {
         loadingNotice.setText("\u274C Error loading library.");
       }
@@ -31810,593 +32586,6 @@ function createCoordinatorAgent(config, subAgents) {
   });
 }
 
-// src/engine/pdf-service.ts
-var import_obsidian4 = require("obsidian");
-var LIBRARY_DIR = "DyResearch/Library";
-var LIBRARY_INDEX_DIR = "DyResearch/Library Index";
-async function ensureVaultFolder(app, folderPath) {
-  const parts = folderPath.split("/").filter(Boolean);
-  let current = "";
-  for (const part of parts) {
-    current = current ? `${current}/${part}` : part;
-    const exists = await app.vault.adapter.exists(current);
-    if (!exists) {
-      if (typeof app.vault.createFolder === "function") {
-        try {
-          await app.vault.createFolder(current);
-        } catch {
-          await app.vault.adapter.mkdir(current);
-        }
-      } else {
-        await app.vault.adapter.mkdir(current);
-      }
-    }
-  }
-}
-async function writeVaultBinary(app, filePath, buffer) {
-  const copy = buffer.slice(0);
-  if (typeof app.vault.getAbstractFileByPath === "function") {
-    const existing = app.vault.getAbstractFileByPath(filePath);
-    if (existing && typeof app.vault.modifyBinary === "function") {
-      await app.vault.modifyBinary(existing, copy);
-      return;
-    }
-    if (!existing && typeof app.vault.createBinary === "function") {
-      try {
-        await app.vault.createBinary(filePath, copy);
-        return;
-      } catch {
-      }
-    }
-  }
-  await app.vault.adapter.writeBinary(filePath, copy);
-}
-async function moveVaultFile(app, oldPath, newPath) {
-  if (oldPath === newPath)
-    return;
-  if (typeof app.vault.getAbstractFileByPath === "function" && typeof app.vault.rename === "function") {
-    const existing = app.vault.getAbstractFileByPath(oldPath);
-    if (existing) {
-      try {
-        await app.vault.rename(existing, newPath);
-        return;
-      } catch {
-      }
-    }
-  }
-  const bin = await app.vault.adapter.readBinary(oldPath);
-  await writeVaultBinary(app, newPath, bin);
-  await app.vault.adapter.remove(oldPath);
-}
-function sanitizeFileName(name) {
-  return name.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") || "Document";
-}
-function sanitizeTopicFolder(topic) {
-  return topic.replace(/[\\/:*?"<>|_-]/g, " ").replace(/\s+/g, " ").trim();
-}
-function sanitizeTag(rawTag) {
-  return rawTag.replace(/^#+/, "").trim().toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9\-\/]/g, "").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
-}
-function cleanSingleAuthorName(raw) {
-  let cleaned = raw.replace(/\S+@\S+\.\S+/g, "").replace(/[∗*†‡§¶∥#0-9]+/g, " ").replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim();
-  if (cleaned.includes(",")) {
-    const parts = cleaned.split(",").map((p) => p.trim()).filter(Boolean);
-    if (parts.length === 2 && !/^(Jr\.?|Sr\.?|II|III|IV|Ph\.?D\.?|MD)$/i.test(parts[1])) {
-      cleaned = `${parts[1]} ${parts[0]}`;
-    }
-  }
-  return cleaned.replace(/^[,.\-\s]+|[,.\-\s]+$/g, "").trim();
-}
-function parseNameTokens(name) {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length < 2)
-    return null;
-  const first = parts[0].replace(/\./g, "").toLowerCase();
-  const last = parts[parts.length - 1].replace(/\./g, "").toLowerCase();
-  const middle = parts.slice(1, -1).map((m7) => m7.replace(/\./g, "").toLowerCase());
-  return { first, middle, last };
-}
-function areAuthorsEquivalent(nameA, nameB) {
-  const normA = nameA.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
-  const normB = nameB.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
-  if (normA === normB)
-    return true;
-  const tokA = parseNameTokens(nameA);
-  const tokB = parseNameTokens(nameB);
-  if (!tokA || !tokB)
-    return false;
-  if (tokA.last !== tokB.last)
-    return false;
-  const firstMatch = tokA.first === tokB.first || tokA.first.length === 1 && tokB.first.startsWith(tokA.first) || tokB.first.length === 1 && tokA.first.startsWith(tokB.first);
-  if (!firstMatch)
-    return false;
-  if (tokA.middle.length > 0 && tokB.middle.length > 0) {
-    const mA3 = tokA.middle[0];
-    const mB2 = tokB.middle[0];
-    if (mA3[0] !== mB2[0])
-      return false;
-  }
-  return true;
-}
-function normalizeAndDeduplicateAuthors(rawAuthors, existingCanonicalAuthors = []) {
-  let rawList;
-  if (Array.isArray(rawAuthors)) {
-    rawList = rawAuthors;
-  } else if (/[;\n]/.test(rawAuthors)) {
-    rawList = rawAuthors.split(/[;&\n]+/);
-  } else {
-    const commaParts = rawAuthors.split(",").map((s) => s.trim()).filter(Boolean);
-    const isSingleLastFirst = commaParts.length === 2 && !/\band\b/i.test(rawAuthors) && commaParts[0].split(/\s+/).length === 1 && commaParts[1].split(/\s+/).length <= 2;
-    if (isSingleLastFirst) {
-      rawList = [rawAuthors];
-    } else {
-      rawList = rawAuthors.replace(/\band\b/gi, ",").split(/[,&\n]+/);
-    }
-  }
-  const candidates = rawList.map(cleanSingleAuthorName).filter((name) => name.length >= 2 && !/^(unknown|et al\.?|others|n\/a)$/i.test(name));
-  if (candidates.length === 0)
-    return "Unknown";
-  const deduplicated = [];
-  for (const candidate of candidates) {
-    let bestName = candidate;
-    for (const existing of existingCanonicalAuthors) {
-      if (areAuthorsEquivalent(bestName, existing)) {
-        const cleanCandidateLen = bestName.replace(/\./g, "").length;
-        const cleanExistingLen = existing.replace(/\./g, "").length;
-        bestName = cleanExistingLen >= cleanCandidateLen ? existing : bestName;
-        break;
-      }
-    }
-    const existingIdx = deduplicated.findIndex((already) => areAuthorsEquivalent(bestName, already));
-    if (existingIdx !== -1) {
-      const already = deduplicated[existingIdx];
-      if (bestName.replace(/\./g, "").length > already.replace(/\./g, "").length) {
-        deduplicated[existingIdx] = bestName;
-      }
-    } else {
-      deduplicated.push(bestName);
-    }
-  }
-  return deduplicated.length > 0 ? deduplicated.join(", ") : "Unknown";
-}
-function resolveConsistentTopicFolder(candidateTopic, existingFolders) {
-  const cleaned = sanitizeTopicFolder(candidateTopic);
-  if (!cleaned || /^uncategorized$/i.test(cleaned))
-    return "Uncategorized";
-  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "").replace(/s$/, "");
-  const targetNorm = norm(cleaned);
-  for (const folder of existingFolders) {
-    if (!folder || /^uncategorized$/i.test(folder))
-      continue;
-    if (norm(folder) === targetNorm) {
-      return folder;
-    }
-  }
-  return cleaned.split(" ").map((w) => w.length > 2 || w === cleaned.split(" ")[0] ? w.charAt(0).toUpperCase() + w.slice(1) : w.toLowerCase()).join(" ");
-}
-var HEADER_BOILERPLATE_REGEX = /\b(copyright|isbn|issn|doi:|arxiv:|proceedings of|permission to|reproduce|attribution|hereby grants|all rights reserved|preprint|submitted to|published in|vol\.|volume \d+|issue \d+)\b/i;
-var AFFILIATION_OR_NON_PERSON_REGEX = /\b(university|universit[aàäéèê]|institut[eo]?|department|faculty|center|centre|laboratory|labs?|research|foundation|academy|college|school|hospital|clinic|ministry|agency|association|society|corporation|inc\.|corp\.|ltd\.|llc|gmbh|group|division|team|abstract|introduction|contents|chapter|preface|copyright|isbn|issn|doi|arxiv|proceedings|conference|symposium|workshop|transactions|journal|volume|issue|preprint|submitted|published|permission|reproduce|attribution|hereby|grants|equal contribution)\b/i;
-function inferTitleAndAuthorsFromHeader(rawText) {
-  const firstPage = rawText.split(/-- 1 of \d+ --/)[0] || rawText.slice(0, 3e3);
-  const beforeAbstract = firstPage.split(/(?:^|\n)\s*(?:Abstract|1\.?\s+Introduction|Contents|Table of Contents)\b/i)[0] || firstPage.slice(0, 1500);
-  const lines = beforeAbstract.split("\n").map((l) => l.trim()).filter((l) => l.length > 2 && !/@/.test(l) && !/^https?:\/\//i.test(l));
-  const cleanLines = lines.filter((l) => !HEADER_BOILERPLATE_REGEX.test(l));
-  let inferredTitle;
-  let titleIdx = -1;
-  for (let i = 0; i < Math.min(cleanLines.length, 6); i++) {
-    const line = cleanLines[i];
-    if (line.length >= 6 && line.length <= 140 && !/^\d+$/.test(line)) {
-      inferredTitle = line.replace(/[∗*†‡]+$/g, "").trim();
-      titleIdx = lines.indexOf(line);
-      break;
-    }
-  }
-  const authorCandidates = [];
-  const startIdx = titleIdx !== -1 ? titleIdx + 1 : 1;
-  for (let i = startIdx; i < lines.length; i++) {
-    const line = lines[i];
-    if (AFFILIATION_OR_NON_PERSON_REGEX.test(line))
-      continue;
-    if (/@/.test(line))
-      continue;
-    const segments = line.replace(/\band\b/gi, ",").split(/[,;]+/).map(cleanSingleAuthorName).filter(Boolean);
-    for (const seg of segments) {
-      const words = seg.split(/\s+/);
-      if (words.length >= 2 && words.length <= 4 && words.every((w) => /^[A-ZŁŚŻŹĆŃÓÁÉÍÓÚÄÖÜ][a-zA-Z0-9.\-łśżźćńóáéíóúäöü']*$/.test(w)) && !AFFILIATION_OR_NON_PERSON_REGEX.test(seg)) {
-        authorCandidates.push(seg);
-      }
-    }
-  }
-  return {
-    inferredTitle,
-    inferredAuthors: authorCandidates.length > 0 ? authorCandidates.join(", ") : void 0
-  };
-}
-function parseAcademicStructure(rawText) {
-  const cleanText = rawText.replace(/\r\n/g, "\n");
-  let abstractText = "";
-  const absMatch = cleanText.match(/(?:^|\n)\s*(?:Abstract|Executive Summary|Overview|Preface)\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:1\.?\s+Introduction|I\.?\s+Introduction|Chapter\s+1|Keywords|Index Terms|-- 1 of|\n\n\d+\s+[A-Z]))/i);
-  if (absMatch) {
-    abstractText = absMatch[1].split("\n").filter((line) => !/^[∗†‡§]\s*(Equal contribution|Work performed|Corresponding author)/i.test(line.trim())).filter((line) => !/\b(Proceedings of|Conference on|Symposium on|Transactions on|arXiv:|DOI:)\b/i.test(line.trim())).join(" ").replace(/\s+/g, " ").trim();
-  }
-  const sectionTitles = [];
-  const seenSections = /* @__PURE__ */ new Set();
-  const lines = cleanText.split("\n");
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (line.length < 4 || line.length > 90)
-      continue;
-    const chapMatch = line.match(/^(?:Chapter|Part|Section)\s+(\d+|[IVXLCDM]+)[:.\-\s]+([A-Z][A-Za-z0-9\s\-:,()]+)$/i);
-    const secMatch = line.match(/^(\d+(?:\.\d+){0,2})\.?\s+([A-Z][A-Za-z0-9\s\-:,()]+)$/);
-    if (chapMatch) {
-      const heading = `Chapter ${chapMatch[1]}: ${chapMatch[2].trim()}`;
-      const norm = heading.toLowerCase();
-      if (!seenSections.has(norm)) {
-        seenSections.add(norm);
-        sectionTitles.push(heading);
-      }
-    } else if (secMatch) {
-      const num = secMatch[1];
-      const topNum = parseInt(num.split(".")[0], 10);
-      if (topNum >= 1 && topNum <= 30) {
-        const heading = `${num} ${secMatch[2].trim()}`;
-        const norm = heading.toLowerCase();
-        if (!seenSections.has(norm)) {
-          seenSections.add(norm);
-          sectionTitles.push(heading);
-        }
-      }
-    }
-  }
-  let conclusionsText = "";
-  const concMatch = cleanText.match(/(?:^|\n)\s*(?:\d+\.?\s+)?(?:Conclusions?|Summary and Conclusions|Concluding Remarks)(?:\s+and\s+Future\s+Work)?\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:Acknowledgements?|Acknowledgments?|References|Bibliography|Appendix|-- \d+ of))/i);
-  if (concMatch) {
-    conclusionsText = concMatch[1].replace(/\n-- \d+ of \d+ --\n/g, " ").replace(/\s+/g, " ").trim();
-  }
-  const { inferredTitle, inferredAuthors } = inferTitleAndAuthorsFromHeader(cleanText);
-  return {
-    abstractText,
-    sectionTitles,
-    conclusionsText,
-    inferredTitle,
-    inferredAuthors
-  };
-}
-async function extractPdfTextAndInfo(buffer) {
-  const pdfjsLib = await (0, import_obsidian4.loadPdfJs)();
-  const loadingTask = pdfjsLib.getDocument(buffer.slice(0));
-  const doc = await loadingTask.promise;
-  try {
-    let infoTitle;
-    let infoAuthor;
-    try {
-      const meta = await doc.getMetadata();
-      if (meta?.info?.Title && typeof meta.info.Title === "string") {
-        infoTitle = meta.info.Title.trim();
-      }
-      if (meta?.info?.Author && typeof meta.info.Author === "string") {
-        infoAuthor = meta.info.Author.trim();
-      }
-    } catch {
-    }
-    const totalPages = doc.numPages || 0;
-    const pageTexts = [];
-    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-      const page = await doc.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      const items = textContent?.items || [];
-      let pageStr = "";
-      for (const item of items) {
-        if ("str" in item) {
-          pageStr += item.str + (item.hasEOL ? "\n" : " ");
-        }
-      }
-      pageTexts.push(`${pageStr.trim()}
--- ${pageNum} of ${totalPages} --`);
-      if (typeof page.cleanup === "function") {
-        page.cleanup();
-      }
-    }
-    const fullText = pageTexts.join("\n\n").trim();
-    const structure = parseAcademicStructure(fullText);
-    return {
-      text: fullText,
-      totalPages,
-      infoTitle,
-      infoAuthor,
-      inferredTitle: structure.inferredTitle,
-      inferredAuthors: structure.inferredAuthors,
-      abstractText: structure.abstractText,
-      sectionTitles: structure.sectionTitles,
-      conclusionsText: structure.conclusionsText
-    };
-  } finally {
-    if (typeof doc.destroy === "function") {
-      await doc.destroy();
-    }
-  }
-}
-async function getExistingLibraryTaxonomy(app) {
-  const catalog = await listLibraryCatalog(app);
-  const folderSet = /* @__PURE__ */ new Set();
-  const authorList = [];
-  if (await app.vault.adapter.exists(LIBRARY_DIR)) {
-    const listed = await app.vault.adapter.list(LIBRARY_DIR);
-    for (const f7 of listed.folders) {
-      const rel = f7.slice(LIBRARY_DIR.length + 1);
-      if (rel && !rel.startsWith(".") && !/^uncategorized$/i.test(rel)) {
-        folderSet.add(rel);
-      }
-    }
-  }
-  for (const entry of catalog) {
-    if (entry.topicFolder && !/^uncategorized$/i.test(entry.topicFolder)) {
-      folderSet.add(entry.topicFolder);
-    }
-    if (entry.authors && entry.authors !== "Unknown") {
-      const split = entry.authors.split(",").map((a7) => cleanSingleAuthorName(a7)).filter(Boolean);
-      for (const a7 of split) {
-        const existingIdx = authorList.findIndex((ex2) => areAuthorsEquivalent(a7, ex2));
-        if (existingIdx !== -1) {
-          if (a7.replace(/\./g, "").length > authorList[existingIdx].replace(/\./g, "").length) {
-            authorList[existingIdx] = a7;
-          }
-        } else {
-          authorList.push(a7);
-        }
-      }
-    }
-  }
-  return {
-    topicFolders: Array.from(folderSet),
-    canonicalAuthors: authorList
-  };
-}
-async function saveAndIndexDocument(app, options) {
-  await ensureVaultFolder(app, LIBRARY_DIR);
-  await ensureVaultFolder(app, LIBRARY_INDEX_DIR);
-  const taxonomy = await getExistingLibraryTaxonomy(app);
-  const extMatch = options.filename.match(/\.(pdf|docx|md|txt)$/i);
-  const ext = extMatch ? extMatch[1].toLowerCase() : "pdf";
-  const rawBaseName = options.filename.replace(/\.(pdf|docx|md|txt)$/i, "");
-  const docKind = options.docKind || "Paper";
-  let extractedText = "";
-  let totalPages = 1;
-  let detectedTitle = options.title?.trim() || "";
-  let detectedAuthors = options.authors?.trim() || "";
-  let abstractText = "";
-  let sectionTitles = [];
-  let conclusionsText = "";
-  if (ext === "pdf") {
-    const pdfData = await extractPdfTextAndInfo(options.buffer.slice(0));
-    extractedText = pdfData.text;
-    totalPages = pdfData.totalPages;
-    abstractText = pdfData.abstractText;
-    sectionTitles = pdfData.sectionTitles;
-    conclusionsText = pdfData.conclusionsText;
-    if (!detectedTitle) {
-      detectedTitle = pdfData.infoTitle && pdfData.infoTitle.length > 2 ? pdfData.infoTitle : pdfData.inferredTitle || "";
-    }
-    if (!detectedAuthors) {
-      detectedAuthors = pdfData.infoAuthor && pdfData.infoAuthor.length > 1 ? pdfData.infoAuthor : pdfData.inferredAuthors || "";
-    }
-  } else if (ext === "md" || ext === "txt") {
-    extractedText = new TextDecoder("utf-8").decode(options.buffer.slice(0));
-    const structure = parseAcademicStructure(extractedText);
-    abstractText = structure.abstractText;
-    sectionTitles = structure.sectionTitles;
-    conclusionsText = structure.conclusionsText;
-    if (!detectedTitle && structure.inferredTitle)
-      detectedTitle = structure.inferredTitle;
-    if (!detectedAuthors && structure.inferredAuthors)
-      detectedAuthors = structure.inferredAuthors;
-  }
-  const finalTitle = detectedTitle || rawBaseName.replace(/_/g, " ") || "Untitled Document";
-  const finalAuthors = normalizeAndDeduplicateAuthors(detectedAuthors || "Unknown", taxonomy.canonicalAuthors);
-  const resolvedTopic = options.topicFolder ? resolveConsistentTopicFolder(options.topicFolder, taxonomy.topicFolders) : "";
-  const subject = (options.subject || resolvedTopic || "general").toLowerCase().trim();
-  const safeBase = sanitizeFileName(finalTitle || rawBaseName);
-  const targetFolder = resolvedTopic && resolvedTopic !== "Uncategorized" ? `${LIBRARY_DIR}/${resolvedTopic}` : LIBRARY_DIR;
-  await ensureVaultFolder(app, targetFolder);
-  const filePath = `${targetFolder}/${safeBase}.${ext}`;
-  await writeVaultBinary(app, filePath, options.buffer);
-  const defaultTags = [
-    sanitizeTag(docKind),
-    sanitizeTag(subject),
-    sanitizeTag(ext)
-  ].filter(Boolean);
-  const cleanedInputTags = (options.tags || []).map(sanitizeTag).filter(Boolean);
-  const allTags = Array.from(/* @__PURE__ */ new Set([...cleanedInputTags, ...defaultTags]));
-  const indexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
-  const indexMarkdown = buildIndexMarkdown({
-    title: finalTitle,
-    authors: finalAuthors,
-    docKind,
-    subject,
-    topicFolder: resolvedTopic || "Uncategorized",
-    tags: allTags,
-    type: ext.toUpperCase(),
-    pages: totalPages,
-    sourceUrl: options.sourceUrl || "",
-    filePath,
-    abstractText,
-    sectionTitles,
-    summary: options.summary || "",
-    conclusionsText
-  });
-  await app.vault.adapter.write(indexPath, indexMarkdown);
-  return {
-    filePath,
-    indexPath,
-    docKind,
-    title: finalTitle,
-    authors: finalAuthors,
-    subject,
-    topicFolder: resolvedTopic || "Uncategorized",
-    totalPages,
-    totalChars: extractedText.length,
-    abstractText,
-    sectionTitles,
-    conclusionsText,
-    textPreview: extractedText.substring(0, 6e3)
-  };
-}
-function buildIndexMarkdown(fields) {
-  const docKind = fields.docKind || "Paper";
-  const cleanedTags = (fields.tags || []).map(sanitizeTag).filter(Boolean);
-  const tagLines = cleanedTags.length > 0 ? Array.from(new Set(cleanedTags)).map((t) => `  - ${t}`).join("\n") : "  - research";
-  const sectionsHeading = docKind === "Book" ? "## Chapters & Table of Contents" : docKind === "Document" ? "## Key Sections & Outline" : "## Section Titles";
-  const abstractHeading = docKind === "Book" ? "## Book Overview" : docKind === "Document" ? "## Overview" : "## Abstract";
-  const sectionsList = fields.sectionTitles && fields.sectionTitles.length > 0 ? fields.sectionTitles.map((s) => `- ${s}`).join("\n") : "- *(No numbered sections detected)*";
-  const blocks = [
-    "---",
-    `title: "${fields.title.replace(/"/g, '\\"')}"`,
-    `authors: "${fields.authors.replace(/"/g, '\\"')}"`,
-    `doc_kind: "${docKind}"`,
-    `subject: "${fields.subject.toLowerCase()}"`,
-    `topic_folder: "${fields.topicFolder.replace(/"/g, '\\"')}"`,
-    "tags:",
-    tagLines,
-    `type: "${fields.type}"`,
-    `pages: ${fields.pages}`,
-    `source_url: "${fields.sourceUrl}"`,
-    `file_path: "${fields.filePath}"`,
-    `indexed_at: "${(/* @__PURE__ */ new Date()).toISOString()}"`,
-    "---",
-    "",
-    `# ${fields.title}`,
-    "",
-    `- **Document Kind**: ${docKind}`,
-    `- **Original File**: [[${fields.filePath}|${fields.filePath.split("/").pop()}]]`,
-    `- **Topic Folder**: ${fields.topicFolder}`,
-    `- **Subject**: ${fields.subject}`,
-    `- **Authors**: ${fields.authors}`,
-    `- **Pages**: ${fields.pages}`,
-    fields.sourceUrl ? `- **Source URL**: ${fields.sourceUrl}` : "",
-    ""
-  ];
-  if (fields.abstractText && fields.abstractText.trim()) {
-    blocks.push(abstractHeading, fields.abstractText.trim(), "");
-  }
-  if (fields.summary && fields.summary.trim()) {
-    blocks.push("## Summary & Key Takeaways", fields.summary.trim(), "");
-  }
-  blocks.push(sectionsHeading, sectionsList, "");
-  if (fields.conclusionsText && fields.conclusionsText.trim()) {
-    blocks.push("## Conclusions", fields.conclusionsText.trim(), "");
-  }
-  return blocks.filter((line) => line !== void 0).join("\n").trim() + "\n";
-}
-function parseFrontmatter(mdContent) {
-  const match = mdContent.match(/^---\n([\s\S]*?)\n---/);
-  if (!match)
-    return {};
-  const yaml = match[1];
-  const result = {};
-  const lines = yaml.split("\n");
-  let currentListKey = null;
-  for (const line of lines) {
-    if (/^\s*-\s+(.+)$/.test(line) && currentListKey) {
-      const val = line.replace(/^\s*-\s+/, "").trim();
-      result[currentListKey].push(val);
-      continue;
-    }
-    currentListKey = null;
-    const kv3 = line.match(/^([a-zA-Z0-9_]+):\s*(.*)$/);
-    if (kv3) {
-      const key = kv3[1];
-      const rawVal = kv3[2].trim();
-      if (!rawVal) {
-        currentListKey = key;
-        result[key] = [];
-      } else {
-        result[key] = rawVal.replace(/^["']|["']$/g, "");
-      }
-    }
-  }
-  return result;
-}
-function extractMarkdownSection(mdContent, heading) {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const regex = new RegExp(`##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, "i");
-  const m7 = mdContent.match(regex);
-  return m7 ? m7[1].trim() : "";
-}
-async function listFilesRecursive(app, folderPath) {
-  const exists = await app.vault.adapter.exists(folderPath);
-  if (!exists)
-    return [];
-  const listed = await app.vault.adapter.list(folderPath);
-  let results = [...listed.files];
-  for (const sub of listed.folders) {
-    const subFiles = await listFilesRecursive(app, sub);
-    results = results.concat(subFiles);
-  }
-  return results;
-}
-async function listLibraryCatalog(app) {
-  await ensureVaultFolder(app, LIBRARY_DIR);
-  await ensureVaultFolder(app, LIBRARY_INDEX_DIR);
-  const entriesMap = /* @__PURE__ */ new Map();
-  const indexFiles = await listFilesRecursive(app, LIBRARY_INDEX_DIR);
-  for (const idxPath of indexFiles) {
-    if (!idxPath.endsWith(".md"))
-      continue;
-    try {
-      const content = await app.vault.adapter.read(idxPath);
-      const fm2 = parseFrontmatter(content);
-      const baseName = idxPath.split("/").pop().replace(/\.md$/i, "");
-      const filePath = fm2.file_path || "";
-      entriesMap.set(baseName.toLowerCase(), {
-        title: fm2.title || baseName.replace(/_/g, " "),
-        authors: fm2.authors || "Unknown",
-        docKind: fm2.doc_kind || "Paper",
-        subject: fm2.subject || "general",
-        topicFolder: fm2.topic_folder || "Uncategorized",
-        type: fm2.type || "PDF",
-        pages: Number(fm2.pages) || 1,
-        filePath,
-        indexPath: idxPath,
-        tags: Array.isArray(fm2.tags) ? fm2.tags : []
-      });
-    } catch {
-    }
-  }
-  const rawFiles = await listFilesRecursive(app, LIBRARY_DIR);
-  for (const rawPath of rawFiles) {
-    const fileName = rawPath.split("/").pop() || "";
-    if (fileName.startsWith("."))
-      continue;
-    const baseName = fileName.replace(/\.[^.]+$/, "");
-    const key = baseName.toLowerCase();
-    const rel = rawPath.slice(LIBRARY_DIR.length + 1);
-    const relParts = rel.split("/");
-    const topicFolder = relParts.length > 1 ? relParts.slice(0, -1).join("/") : "Uncategorized";
-    const ext = fileName.split(".").pop()?.toUpperCase() || "FILE";
-    const existing = entriesMap.get(key);
-    if (existing) {
-      existing.filePath = rawPath;
-      if (topicFolder !== "Uncategorized") {
-        existing.topicFolder = topicFolder;
-      }
-    } else {
-      entriesMap.set(key, {
-        title: baseName.replace(/_/g, " "),
-        authors: "Unknown",
-        docKind: "Paper",
-        subject: topicFolder.toLowerCase(),
-        topicFolder,
-        type: ext,
-        pages: 1,
-        filePath: rawPath,
-        indexPath: "",
-        tags: []
-      });
-    }
-  }
-  return Array.from(entriesMap.values());
-}
-
 // src/engine/tools/library.ts
 async function upsertIndexNote(app, args) {
   await ensureVaultFolder(app, LIBRARY_DIR);
@@ -32608,18 +32797,53 @@ function getLibrarianTools(app) {
     }),
     new Dt({
       name: "list_available_sources",
-      description: "Lists all documents, existing topic subfolders in DyResearch/Library, canonical authors, and indexed notes in DyResearch/Library Index.",
+      description: "Lists and filters documents, existing topic subfolders in DyResearch/Library, canonical authors, and indexed notes in DyResearch/Library Index.",
       parameters: {
         type: "OBJECT",
-        properties: {}
+        properties: {
+          doc_kind_filter: { type: "STRING", description: 'Optional filter by document kind: "Paper", "Book", or "Document".' },
+          topic_filter: { type: "STRING", description: 'Optional filter by topic folder or subject (e.g. "Machine Learning").' },
+          author_filter: { type: "STRING", description: 'Optional filter by author name (e.g. "Vaswani").' },
+          query: { type: "STRING", description: "Optional keyword filter across title, authors, topic, and tags." }
+        }
       },
-      execute: async () => {
-        const entries = await listLibraryCatalog(app);
+      execute: async (args = {}) => {
+        const allEntries = await listLibraryCatalog(app);
         const taxonomy = await getExistingLibraryTaxonomy(app);
+        const kindFilter = (args.doc_kind_filter || "").trim().toLowerCase();
+        const topicFilter = (args.topic_filter || "").trim().toLowerCase();
+        const authorFilter = (args.author_filter || "").trim();
+        const queryFilter = (args.query || "").trim().toLowerCase();
+        const filtered = allEntries.filter((doc) => {
+          if (kindFilter && doc.docKind.toLowerCase() !== kindFilter && doc.type.toLowerCase() !== kindFilter) {
+            return false;
+          }
+          if (topicFilter) {
+            const inTopic = doc.topicFolder.toLowerCase().includes(topicFilter);
+            const inSubject = doc.subject.toLowerCase().includes(topicFilter);
+            const inTags = doc.tags.some((t) => t.toLowerCase().includes(topicFilter));
+            if (!inTopic && !inSubject && !inTags)
+              return false;
+          }
+          if (authorFilter) {
+            const docAuthors = doc.authors.split(",").map((a7) => cleanSingleAuthorName(a7)).filter(Boolean);
+            const matched = doc.authors.toLowerCase().includes(authorFilter.toLowerCase()) || docAuthors.some((a7) => areAuthorsEquivalent(a7, authorFilter));
+            if (!matched)
+              return false;
+          }
+          if (queryFilter) {
+            const hay = `${doc.title} ${doc.authors} ${doc.topicFolder} ${doc.subject} ${doc.docKind} ${doc.tags.join(" ")}`.toLowerCase();
+            if (!hay.includes(queryFilter))
+              return false;
+          }
+          return true;
+        });
         return JSON.stringify({
           existing_topic_folders: taxonomy.topicFolders,
           canonical_authors: taxonomy.canonicalAuthors,
-          documents: entries
+          total_documents: allEntries.length,
+          matching_documents: filtered.length,
+          documents: filtered
         }, null, 2);
       }
     }),
@@ -32758,18 +32982,21 @@ function getTeachingTools(app) {
     }),
     new Dt({
       name: "search_knowledge_base",
-      description: "Searches DyResearch/Library Index/ for indexed PDFs and documents by keyword and optional subject/topic filter.",
+      description: "Searches DyResearch/Library Index/ for indexed documents by keyword, document kind (Paper, Book, Document), topic/subject, or author(s).",
       parameters: {
         type: "OBJECT",
         properties: {
-          query: { type: "STRING", description: "Keyword or phrase to search in the Library Index." },
-          subject_filter: { type: "STRING", description: 'Optional subject or topic folder filter (e.g. "machine learning").' }
-        },
-        required: ["query"]
+          query: { type: "STRING", description: "Optional keyword or phrase to search in the Library Index." },
+          doc_kind_filter: { type: "STRING", description: 'Optional document kind filter: "Paper", "Book", or "Document".' },
+          subject_filter: { type: "STRING", description: 'Optional subject or topic folder filter (e.g. "machine learning", "Game Theory").' },
+          author_filter: { type: "STRING", description: 'Optional author name filter (e.g. "Vaswani", "Ashish Vaswani").' }
+        }
       },
       execute: async (args) => {
         const rawQuery = (args.query || "").trim().toLowerCase();
+        const kindFilter = (args.doc_kind_filter || "").trim().toLowerCase();
         const subjectFilter = (args.subject_filter || "").trim().toLowerCase();
+        const authorFilter = (args.author_filter || "").trim();
         const indexFiles = await listFilesRecursive(app, LIBRARY_INDEX_DIR);
         const legacyFiles = (await listFilesRecursive(app, LIBRARY_DIR)).filter((f7) => f7.endsWith(".md"));
         const allMdFiles = Array.from(/* @__PURE__ */ new Set([...indexFiles.filter((f7) => f7.endsWith(".md")), ...legacyFiles]));
@@ -32780,6 +33007,13 @@ function getTeachingTools(app) {
         for (const path of allMdFiles) {
           const content = await app.vault.adapter.read(path);
           const fm2 = parseFrontmatter(content);
+          if (kindFilter) {
+            const docKind = (fm2.doc_kind || "Paper").toLowerCase();
+            const docType = (fm2.type || "").toLowerCase();
+            if (docKind !== kindFilter && docType !== kindFilter) {
+              continue;
+            }
+          }
           if (subjectFilter) {
             const docSubject = (fm2.subject || "").toLowerCase();
             const docTopic = (fm2.topic_folder || "").toLowerCase();
@@ -32788,21 +33022,31 @@ function getTeachingTools(app) {
               continue;
             }
           }
+          if (authorFilter) {
+            const docAuthorsRaw = String(fm2.authors || "");
+            const lowerFilter = authorFilter.toLowerCase();
+            const docAuthorList = docAuthorsRaw.split(",").map((a7) => cleanSingleAuthorName(a7)).filter(Boolean);
+            const hasAuthorMatch = docAuthorsRaw.toLowerCase().includes(lowerFilter) || docAuthorList.some((a7) => areAuthorsEquivalent(a7, authorFilter));
+            if (!hasAuthorMatch) {
+              continue;
+            }
+          }
           const lower = content.toLowerCase();
-          let matchIdx = lower.indexOf(rawQuery);
-          if (matchIdx === -1 && keywords.length > 0) {
+          let matchIdx = rawQuery ? lower.indexOf(rawQuery) : 0;
+          if (rawQuery && matchIdx === -1 && keywords.length > 0) {
             for (const kw2 of keywords) {
               matchIdx = lower.indexOf(kw2);
               if (matchIdx !== -1)
                 break;
             }
           }
-          if (matchIdx !== -1 || path.toLowerCase().includes(rawQuery)) {
-            const start = matchIdx !== -1 ? Math.max(0, matchIdx - 150) : 0;
+          if (!rawQuery || matchIdx !== -1 || path.toLowerCase().includes(rawQuery)) {
+            const start = matchIdx > 0 ? Math.max(0, matchIdx - 150) : 0;
             const snippet = content.substring(start, start + 500).replace(/\s+/g, " ").trim();
             matches.push({
               index_path: path,
               title: fm2.title || path.split("/").pop(),
+              doc_kind: fm2.doc_kind || "Paper",
               authors: fm2.authors || "Unknown",
               subject: fm2.subject || "general",
               topic_folder: fm2.topic_folder || "Uncategorized",

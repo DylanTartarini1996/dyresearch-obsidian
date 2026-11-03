@@ -15,7 +15,9 @@ import {
     getExistingLibraryTaxonomy,
     normalizeAndDeduplicateAuthors,
     resolveConsistentTopicFolder,
-    sanitizeTag
+    sanitizeTag,
+    areAuthorsEquivalent,
+    cleanSingleAuthorName
 } from '../pdf-service';
 
 async function upsertIndexNote(
@@ -274,18 +276,55 @@ export function getLibrarianTools(app: App) {
         }),
         new FunctionTool({
             name: 'list_available_sources',
-            description: 'Lists all documents, existing topic subfolders in DyResearch/Library, canonical authors, and indexed notes in DyResearch/Library Index.',
+            description: 'Lists and filters documents, existing topic subfolders in DyResearch/Library, canonical authors, and indexed notes in DyResearch/Library Index.',
             parameters: {
                 type: 'OBJECT' as any,
-                properties: {}
+                properties: {
+                    doc_kind_filter: { type: 'STRING' as any, description: 'Optional filter by document kind: "Paper", "Book", or "Document".' },
+                    topic_filter: { type: 'STRING' as any, description: 'Optional filter by topic folder or subject (e.g. "Machine Learning").' },
+                    author_filter: { type: 'STRING' as any, description: 'Optional filter by author name (e.g. "Vaswani").' },
+                    query: { type: 'STRING' as any, description: 'Optional keyword filter across title, authors, topic, and tags.' }
+                }
             },
-            execute: async () => {
-                const entries = await listLibraryCatalog(app);
+            execute: async (args: any = {}) => {
+                const allEntries = await listLibraryCatalog(app);
                 const taxonomy = await getExistingLibraryTaxonomy(app);
+
+                const kindFilter = (args.doc_kind_filter || '').trim().toLowerCase();
+                const topicFilter = (args.topic_filter || '').trim().toLowerCase();
+                const authorFilter = (args.author_filter || '').trim();
+                const queryFilter = (args.query || '').trim().toLowerCase();
+
+                const filtered = allEntries.filter(doc => {
+                    if (kindFilter && doc.docKind.toLowerCase() !== kindFilter && doc.type.toLowerCase() !== kindFilter) {
+                        return false;
+                    }
+                    if (topicFilter) {
+                        const inTopic = doc.topicFolder.toLowerCase().includes(topicFilter);
+                        const inSubject = doc.subject.toLowerCase().includes(topicFilter);
+                        const inTags = doc.tags.some(t => t.toLowerCase().includes(topicFilter));
+                        if (!inTopic && !inSubject && !inTags) return false;
+                    }
+                    if (authorFilter) {
+                        const docAuthors = doc.authors.split(',').map(a => cleanSingleAuthorName(a)).filter(Boolean);
+                        const matched =
+                            doc.authors.toLowerCase().includes(authorFilter.toLowerCase()) ||
+                            docAuthors.some(a => areAuthorsEquivalent(a, authorFilter));
+                        if (!matched) return false;
+                    }
+                    if (queryFilter) {
+                        const hay = `${doc.title} ${doc.authors} ${doc.topicFolder} ${doc.subject} ${doc.docKind} ${doc.tags.join(' ')}`.toLowerCase();
+                        if (!hay.includes(queryFilter)) return false;
+                    }
+                    return true;
+                });
+
                 return JSON.stringify({
                     existing_topic_folders: taxonomy.topicFolders,
                     canonical_authors: taxonomy.canonicalAuthors,
-                    documents: entries
+                    total_documents: allEntries.length,
+                    matching_documents: filtered.length,
+                    documents: filtered
                 }, null, 2);
             }
         }),

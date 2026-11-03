@@ -103,6 +103,7 @@ export function sanitizeTag(rawTag: string): string {
 export function cleanSingleAuthorName(raw: string): string {
     let cleaned = raw
         .replace(/\S+@\S+\.\S+/g, '')
+        .replace(/\bet\s+al\.?/gi, ' ')
         .replace(/[∗*†‡§¶∥#0-9]+/g, ' ')
         .replace(/\([^)]*\)/g, ' ')
         .replace(/\s+/g, ' ')

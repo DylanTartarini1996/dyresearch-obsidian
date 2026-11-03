@@ -6,7 +6,9 @@ import {
     listFilesRecursive,
     parseFrontmatter,
     sanitizeFileName,
-    extractPdfTextAndInfo
+    extractPdfTextAndInfo,
+    areAuthorsEquivalent,
+    cleanSingleAuthorName
 } from '../pdf-service';
 
 export function getTeachingTools(app: App) {
@@ -57,18 +59,21 @@ export function getTeachingTools(app: App) {
         }),
         new FunctionTool({
             name: 'search_knowledge_base',
-            description: 'Searches DyResearch/Library Index/ for indexed PDFs and documents by keyword and optional subject/topic filter.',
+            description: 'Searches DyResearch/Library Index/ for indexed documents by keyword, document kind (Paper, Book, Document), topic/subject, or author(s).',
             parameters: {
                 type: 'OBJECT' as any,
                 properties: {
-                    query: { type: 'STRING' as any, description: 'Keyword or phrase to search in the Library Index.' },
-                    subject_filter: { type: 'STRING' as any, description: 'Optional subject or topic folder filter (e.g. "machine learning").' }
-                },
-                required: ['query']
+                    query: { type: 'STRING' as any, description: 'Optional keyword or phrase to search in the Library Index.' },
+                    doc_kind_filter: { type: 'STRING' as any, description: 'Optional document kind filter: "Paper", "Book", or "Document".' },
+                    subject_filter: { type: 'STRING' as any, description: 'Optional subject or topic folder filter (e.g. "machine learning", "Game Theory").' },
+                    author_filter: { type: 'STRING' as any, description: 'Optional author name filter (e.g. "Vaswani", "Ashish Vaswani").' }
+                }
             },
             execute: async (args: any) => {
                 const rawQuery = (args.query || "").trim().toLowerCase();
+                const kindFilter = (args.doc_kind_filter || "").trim().toLowerCase();
                 const subjectFilter = (args.subject_filter || "").trim().toLowerCase();
+                const authorFilter = (args.author_filter || "").trim();
 
                 const indexFiles = await listFilesRecursive(app, LIBRARY_INDEX_DIR);
                 const legacyFiles = (await listFilesRecursive(app, LIBRARY_DIR)).filter(f => f.endsWith('.md'));
@@ -83,6 +88,14 @@ export function getTeachingTools(app: App) {
                     const content = await app.vault.adapter.read(path);
                     const fm = parseFrontmatter(content);
 
+                    if (kindFilter) {
+                        const docKind = (fm.doc_kind || 'Paper').toLowerCase();
+                        const docType = (fm.type || '').toLowerCase();
+                        if (docKind !== kindFilter && docType !== kindFilter) {
+                            continue;
+                        }
+                    }
+
                     if (subjectFilter) {
                         const docSubject = (fm.subject || '').toLowerCase();
                         const docTopic = (fm.topic_folder || '').toLowerCase();
@@ -92,21 +105,34 @@ export function getTeachingTools(app: App) {
                         }
                     }
 
+                    if (authorFilter) {
+                        const docAuthorsRaw = String(fm.authors || '');
+                        const lowerFilter = authorFilter.toLowerCase();
+                        const docAuthorList = docAuthorsRaw.split(',').map(a => cleanSingleAuthorName(a)).filter(Boolean);
+                        const hasAuthorMatch =
+                            docAuthorsRaw.toLowerCase().includes(lowerFilter) ||
+                            docAuthorList.some(a => areAuthorsEquivalent(a, authorFilter));
+                        if (!hasAuthorMatch) {
+                            continue;
+                        }
+                    }
+
                     const lower = content.toLowerCase();
-                    let matchIdx = lower.indexOf(rawQuery);
-                    if (matchIdx === -1 && keywords.length > 0) {
+                    let matchIdx = rawQuery ? lower.indexOf(rawQuery) : 0;
+                    if (rawQuery && matchIdx === -1 && keywords.length > 0) {
                         for (const kw of keywords) {
                             matchIdx = lower.indexOf(kw);
                             if (matchIdx !== -1) break;
                         }
                     }
 
-                    if (matchIdx !== -1 || path.toLowerCase().includes(rawQuery)) {
-                        const start = matchIdx !== -1 ? Math.max(0, matchIdx - 150) : 0;
+                    if (!rawQuery || matchIdx !== -1 || path.toLowerCase().includes(rawQuery)) {
+                        const start = matchIdx > 0 ? Math.max(0, matchIdx - 150) : 0;
                         const snippet = content.substring(start, start + 500).replace(/\s+/g, ' ').trim();
                         matches.push({
                             index_path: path,
                             title: fm.title || path.split('/').pop(),
+                            doc_kind: fm.doc_kind || 'Paper',
                             authors: fm.authors || 'Unknown',
                             subject: fm.subject || 'general',
                             topic_folder: fm.topic_folder || 'Uncategorized',

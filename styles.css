@@ -670,6 +670,86 @@
     min-height: 0;
 }
 
+.dy-library-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0 12px 10px 12px;
+    flex-shrink: 0;
+}
+
+.dy-lib-search-input {
+    width: 100%;
+    padding: 6px 10px;
+    font-size: var(--font-ui-small);
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary);
+    color: var(--text-normal);
+}
+
+.dy-lib-search-input:focus,
+.dy-lib-filter-select:focus {
+    border-color: var(--interactive-accent);
+    outline: none;
+}
+
+.dy-lib-filter-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.dy-lib-filter-select {
+    width: 100%;
+    min-width: 0;
+    padding: 4px 6px;
+    font-size: var(--font-ui-smaller);
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary);
+    color: var(--text-normal);
+    text-overflow: ellipsis;
+}
+
+.dy-clear-filters-btn {
+    background: transparent;
+    border: 1px solid var(--background-modifier-border);
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    align-items: center;
+    gap: 4px;
+    box-shadow: none;
+}
+
+.dy-clear-filters-btn:hover {
+    color: var(--text-normal);
+    border-color: var(--interactive-accent);
+    background-color: var(--background-modifier-hover);
+}
+
+.dy-meta-chip {
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 1px 4px;
+    margin: -1px -2px;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.dy-meta-chip:hover,
+.badge-kind.is-clickable-filter:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--interactive-accent);
+    text-decoration: underline;
+}
+
+.badge-kind.is-clickable-filter {
+    cursor: pointer;
+}
+
 .library-card {
     cursor: default;
 }

@@ -1,12 +1,17 @@
 import { ItemView, WorkspaceLeaf, setIcon, Notice } from 'obsidian';
 import type DyResearchPlugin from '../main';
 import { renderChatInterface } from '../modals/chat-modal';
+import { areAuthorsEquivalent, cleanSingleAuthorName } from '../engine/pdf-service';
 
 export const VIEW_TYPE_HISTORY = "dyresearch-history-view";
 
 export class HistoryView extends ItemView {
     private activeTab: 'chat' | 'chats' | 'library' = 'chat';
     private searchQuery = "";
+    private libSearchQuery = "";
+    private libKindFilter = "";
+    private libTopicFilter = "";
+    private libAuthorFilter = "";
 
     constructor(leaf: WorkspaceLeaf, private plugin: DyResearchPlugin) {
         super(leaf);
@@ -292,53 +297,286 @@ export class HistoryView extends ItemView {
 
         const libContainer = container.createDiv({ cls: 'library-container' });
         const libHeader = libContainer.createDiv({ cls: 'history-header' });
-        libHeader.createEl("h4", { text: "Files in Library" });
+        const headerTitle = libHeader.createEl("h4", { text: "Files in Library" });
+
+        const clearFiltersBtn = libHeader.createEl("button", {
+            text: "✕ Clear filters",
+            cls: "dy-clear-filters-btn"
+        });
+        clearFiltersBtn.style.display = "none";
+
+        // Filter & Search bar
+        const filterBox = libContainer.createDiv({ cls: 'dy-library-filters' });
+        const searchInput = filterBox.createEl("input", {
+            type: "text",
+            placeholder: "🔍 Search title, author, topic, or tag...",
+            cls: "dy-lib-search-input"
+        });
+        searchInput.value = this.libSearchQuery;
+
+        const filterSelectRow = filterBox.createDiv({ cls: 'dy-lib-filter-row' });
+
+        const kindSelect = filterSelectRow.createEl("select", {
+            cls: "dy-lib-filter-select",
+            attr: { 'aria-label': 'Filter by document kind' }
+        });
+        kindSelect.createEl("option", { value: "", text: "All Types" });
+        kindSelect.createEl("option", { value: "Paper", text: "📄 Paper" });
+        kindSelect.createEl("option", { value: "Book", text: "📘 Book" });
+        kindSelect.createEl("option", { value: "Document", text: "📑 Document" });
+        kindSelect.value = this.libKindFilter;
+
+        const topicSelect = filterSelectRow.createEl("select", {
+            cls: "dy-lib-filter-select",
+            attr: { 'aria-label': 'Filter by topic' }
+        });
+        topicSelect.createEl("option", { value: "", text: "All Topics" });
+
+        const authorSelect = filterSelectRow.createEl("select", {
+            cls: "dy-lib-filter-select",
+            attr: { 'aria-label': 'Filter by author' }
+        });
+        authorSelect.createEl("option", { value: "", text: "All Authors" });
+
         const list = libContainer.createDiv({ cls: "library-list" });
 
         const loadDocs = async () => {
             const loadingNotice = list.createEl("p", { text: "Loading...", cls: "loading-text" });
             try {
-                const files = await this.plugin.engine.getLibraryFiles();
+                const allFiles = await this.plugin.engine.getLibraryFiles();
                 loadingNotice.remove();
 
-                files.forEach((doc) => {
-                    const card = list.createDiv({ cls: "library-card" });
-                    const header = card.createDiv({ cls: "library-card-header" });
-                    const titleInfo = header.createDiv({ cls: "library-title-group" });
-                    titleInfo.createEl("strong", { text: doc.title });
-                    if (doc.docKind) {
-                        titleInfo.createEl("span", { text: doc.docKind, cls: "badge-kind" });
-                    }
-                    titleInfo.createEl("span", { text: doc.type, cls: "badge-type" });
+                // Populate unique topics and canonical authors
+                const topicsSet = new Set<string>();
+                const authorsList: string[] = [];
 
-                    const libDeleteBtn = header.createEl("button", {
-                        cls: "dy-delete-btn-small",
-                        attr: { 'aria-label': 'Delete document' }
-                    });
-                    setIcon(libDeleteBtn, 'trash');
+                for (const doc of allFiles) {
+                    const topic = (doc.topicFolder && doc.topicFolder !== 'Uncategorized')
+                        ? doc.topicFolder
+                        : doc.subject;
+                    if (topic) topicsSet.add(topic);
 
-                    libDeleteBtn.onClickEvent(async (e) => {
-                        e.stopPropagation();
-                        if (!confirm(`Delete "${doc.title}" from Library and Library Index?`)) return;
-                        await this.plugin.engine.deleteLibraryFile(doc.title);
-                        this.refreshView();
-                    });
-
-                    card.createEl("div", { text: `📁 ${doc.topicFolder || doc.subject}`, cls: "library-meta" });
-                    card.createEl("div", { text: `👤 ${doc.authors} • 📄 ${doc.pages || 1} p.`, cls: "library-meta" });
-
-                    card.style.cursor = "pointer";
-                    card.onClickEvent(async () => {
-                        const targetPath = doc.indexPath || doc.filePath;
-                        if (targetPath) {
-                            await this.app.workspace.openLinkText(targetPath, '', false);
+                    if (doc.authors && doc.authors !== 'Unknown') {
+                        const splitAuthors = doc.authors
+                            .split(',')
+                            .map(a => cleanSingleAuthorName(a))
+                            .filter(Boolean);
+                        for (const a of splitAuthors) {
+                            const existingIdx = authorsList.findIndex(ex => areAuthorsEquivalent(a, ex));
+                            if (existingIdx !== -1) {
+                                if (a.replace(/\./g, '').length > authorsList[existingIdx].replace(/\./g, '').length) {
+                                    authorsList[existingIdx] = a;
+                                }
+                            } else {
+                                authorsList.push(a);
+                            }
                         }
+                    }
+                }
+
+                Array.from(topicsSet)
+                    .sort((a, b) => a.localeCompare(b))
+                    .forEach(t => {
+                        topicSelect.createEl("option", { value: t, text: `📁 ${t}` });
                     });
+                topicSelect.value = topicsSet.has(this.libTopicFilter) ? this.libTopicFilter : "";
+                this.libTopicFilter = topicSelect.value;
+
+                authorsList
+                    .sort((a, b) => a.localeCompare(b))
+                    .forEach(a => {
+                        authorSelect.createEl("option", { value: a, text: `👤 ${a}` });
+                    });
+                authorSelect.value = authorsList.includes(this.libAuthorFilter) ? this.libAuthorFilter : "";
+                this.libAuthorFilter = authorSelect.value;
+
+                const renderFilteredList = () => {
+                    list.empty();
+
+                    const query = this.libSearchQuery.trim().toLowerCase();
+                    const kind = this.libKindFilter;
+                    const topic = this.libTopicFilter.toLowerCase();
+                    const author = this.libAuthorFilter;
+
+                    const hasActiveFilter = Boolean(query || kind || topic || author);
+                    clearFiltersBtn.style.display = hasActiveFilter ? "inline-flex" : "none";
+
+                    const filtered = allFiles.filter(doc => {
+                        if (kind && doc.docKind !== kind && doc.type.toLowerCase() !== kind.toLowerCase()) {
+                            return false;
+                        }
+                        if (topic) {
+                            const docTopic = (doc.topicFolder || '').toLowerCase();
+                            const docSubj = (doc.subject || '').toLowerCase();
+                            if (docTopic !== topic && docSubj !== topic && !docTopic.includes(topic)) {
+                                return false;
+                            }
+                        }
+                        if (author) {
+                            const docAuthors = (doc.authors || '')
+                                .split(',')
+                                .map(a => cleanSingleAuthorName(a))
+                                .filter(Boolean);
+                            const matched =
+                                doc.authors.toLowerCase().includes(author.toLowerCase()) ||
+                                docAuthors.some(a => areAuthorsEquivalent(a, author));
+                            if (!matched) return false;
+                        }
+                        if (query) {
+                            const haystack = [
+                                doc.title,
+                                doc.authors,
+                                doc.topicFolder,
+                                doc.subject,
+                                doc.docKind,
+                                doc.type,
+                                ...(doc.tags || [])
+                            ].join(' ').toLowerCase();
+                            const terms = query.split(/\s+/).filter(Boolean);
+                            if (!terms.every(term => haystack.includes(term))) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    });
+
+                    headerTitle.setText(
+                        hasActiveFilter
+                            ? `Files in Library (${filtered.length} / ${allFiles.length})`
+                            : `Files in Library (${allFiles.length})`
+                    );
+
+                    filtered.forEach((doc) => {
+                        const card = list.createDiv({ cls: "library-card" });
+                        const header = card.createDiv({ cls: "library-card-header" });
+                        const titleInfo = header.createDiv({ cls: "library-title-group" });
+                        titleInfo.createEl("strong", { text: doc.title });
+                        if (doc.docKind) {
+                            const kindBadge = titleInfo.createEl("span", {
+                                text: doc.docKind,
+                                cls: "badge-kind is-clickable-filter",
+                                attr: { title: `Filter by ${doc.docKind}` }
+                            });
+                            kindBadge.onClickEvent((e) => {
+                                e.stopPropagation();
+                                this.libKindFilter = this.libKindFilter === doc.docKind ? "" : doc.docKind;
+                                kindSelect.value = this.libKindFilter;
+                                renderFilteredList();
+                            });
+                        }
+                        titleInfo.createEl("span", { text: doc.type, cls: "badge-type" });
+
+                        const libDeleteBtn = header.createEl("button", {
+                            cls: "dy-delete-btn-small",
+                            attr: { 'aria-label': 'Delete document' }
+                        });
+                        setIcon(libDeleteBtn, 'trash');
+
+                        libDeleteBtn.onClickEvent(async (e) => {
+                            e.stopPropagation();
+                            if (!confirm(`Delete "${doc.title}" from Library and Library Index?`)) return;
+                            await this.plugin.engine.deleteLibraryFile(doc.title);
+                            this.refreshView();
+                        });
+
+                        const displayTopic = (doc.topicFolder && doc.topicFolder !== 'Uncategorized')
+                            ? doc.topicFolder
+                            : doc.subject;
+                        const topicRow = card.createDiv({ cls: "library-meta" });
+                        const topicChip = topicRow.createEl("span", {
+                            text: `📁 ${displayTopic}`,
+                            cls: "dy-meta-chip",
+                            attr: { title: `Filter by topic: ${displayTopic}` }
+                        });
+                        topicChip.onClickEvent((e) => {
+                            e.stopPropagation();
+                            this.libTopicFilter = this.libTopicFilter === displayTopic ? "" : displayTopic;
+                            topicSelect.value = this.libTopicFilter;
+                            renderFilteredList();
+                        });
+
+                        const authorRow = card.createDiv({ cls: "library-meta" });
+                        authorRow.createSpan({ text: "👤 " });
+                        const docAuthorList = (doc.authors || 'Unknown')
+                            .split(',')
+                            .map(a => a.trim())
+                            .filter(Boolean);
+
+                        docAuthorList.forEach((authName, idx) => {
+                            if (authName !== 'Unknown') {
+                                const authChip = authorRow.createEl("span", {
+                                    text: authName,
+                                    cls: "dy-meta-chip",
+                                    attr: { title: `Filter by author: ${authName}` }
+                                });
+                                authChip.onClickEvent((e) => {
+                                    e.stopPropagation();
+                                    const canonical = authorsList.find(ex => areAuthorsEquivalent(authName, ex)) || authName;
+                                    this.libAuthorFilter = this.libAuthorFilter === canonical ? "" : canonical;
+                                    authorSelect.value = this.libAuthorFilter;
+                                    renderFilteredList();
+                                });
+                            } else {
+                                authorRow.createSpan({ text: authName });
+                            }
+                            if (idx < docAuthorList.length - 1) {
+                                authorRow.createSpan({ text: ", " });
+                            }
+                        });
+                        authorRow.createSpan({ text: ` • 📄 ${doc.pages || 1} p.` });
+
+                        card.style.cursor = "pointer";
+                        card.onClickEvent(async () => {
+                            const targetPath = doc.indexPath || doc.filePath;
+                            if (targetPath) {
+                                await this.app.workspace.openLinkText(targetPath, '', false);
+                            }
+                        });
+                    });
+
+                    if (filtered.length === 0) {
+                        list.createEl("p", {
+                            text: allFiles.length === 0
+                                ? "No documents found in Library."
+                                : "No documents match the current search or filters.",
+                            cls: "dy-empty-list-text"
+                        });
+                    }
+                };
+
+                searchInput.addEventListener("input", () => {
+                    this.libSearchQuery = searchInput.value;
+                    renderFilteredList();
                 });
 
-                if (files.length === 0) {
-                    list.createEl("p", { text: "No documents found in Library.", cls: "dy-empty-list-text" });
-                }
+                kindSelect.addEventListener("change", () => {
+                    this.libKindFilter = kindSelect.value;
+                    renderFilteredList();
+                });
+
+                topicSelect.addEventListener("change", () => {
+                    this.libTopicFilter = topicSelect.value;
+                    renderFilteredList();
+                });
+
+                authorSelect.addEventListener("change", () => {
+                    this.libAuthorFilter = authorSelect.value;
+                    renderFilteredList();
+                });
+
+                clearFiltersBtn.onClickEvent(() => {
+                    this.libSearchQuery = "";
+                    this.libKindFilter = "";
+                    this.libTopicFilter = "";
+                    this.libAuthorFilter = "";
+                    searchInput.value = "";
+                    kindSelect.value = "";
+                    topicSelect.value = "";
+                    authorSelect.value = "";
+                    renderFilteredList();
+                });
+
+                renderFilteredList();
             } catch (err) {
                 loadingNotice.setText("❌ Error loading library.");
             }
