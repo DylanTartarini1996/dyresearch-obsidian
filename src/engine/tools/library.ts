@@ -3,24 +3,28 @@ import { FunctionTool } from '@google/adk';
 import {
     LIBRARY_DIR,
     LIBRARY_INDEX_DIR,
+    DocumentKind,
     ensureVaultFolder,
     moveVaultFile,
     sanitizeFileName,
-    sanitizeTopicFolder,
     buildIndexMarkdown,
     parseFrontmatter,
     extractMarkdownSection,
     listLibraryCatalog,
-    listFilesRecursive
+    listFilesRecursive,
+    getExistingLibraryTaxonomy,
+    normalizeAndDeduplicateAuthors,
+    resolveConsistentTopicFolder
 } from '../pdf-service';
 
 async function upsertIndexNote(
     app: App,
     args: {
         title: string;
+        doc_kind?: DocumentKind;
         subject?: string;
         topic_folder?: string;
-        author?: string;
+        author?: string | string[];
         source_type?: string;
         tags?: string[];
         abstract?: string;
@@ -30,12 +34,23 @@ async function upsertIndexNote(
         content?: string;
         file_path?: string;
     }
-): Promise<{ indexPath: string; filePath: string }> {
+): Promise<{ indexPath: string; filePath: string; topicFolder: string; authors: string }> {
     await ensureVaultFolder(app, LIBRARY_DIR);
     await ensureVaultFolder(app, LIBRARY_INDEX_DIR);
 
+    const taxonomy = await getExistingLibraryTaxonomy(app);
+
+    // Locate any existing index note by file_path or title
     const safeBase = sanitizeFileName(args.title || 'Untitled');
-    const indexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
+    let indexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
+
+    if (!(await app.vault.adapter.exists(indexPath)) && args.file_path) {
+        const fileBase = sanitizeFileName((args.file_path.split('/').pop() || '').replace(/\.[^.]+$/, ''));
+        const candidatePath = `${LIBRARY_INDEX_DIR}/${fileBase}.md`;
+        if (await app.vault.adapter.exists(candidatePath)) {
+            indexPath = candidatePath;
+        }
+    }
 
     let existingFm: Record<string, any> = {};
     let existingAbstract = '';
@@ -46,10 +61,16 @@ async function upsertIndexNote(
     if (await app.vault.adapter.exists(indexPath)) {
         const existingMd = await app.vault.adapter.read(indexPath);
         existingFm = parseFrontmatter(existingMd);
-        existingAbstract = extractMarkdownSection(existingMd, 'Abstract');
+        existingAbstract =
+            extractMarkdownSection(existingMd, 'Abstract') ||
+            extractMarkdownSection(existingMd, 'Book Overview') ||
+            extractMarkdownSection(existingMd, 'Overview');
         existingSummary = extractMarkdownSection(existingMd, 'Summary & Key Takeaways');
         existingConclusions = extractMarkdownSection(existingMd, 'Conclusions');
-        const rawSec = extractMarkdownSection(existingMd, 'Section Titles');
+        const rawSec =
+            extractMarkdownSection(existingMd, 'Section Titles') ||
+            extractMarkdownSection(existingMd, 'Chapters & Table of Contents') ||
+            extractMarkdownSection(existingMd, 'Key Sections & Outline');
         if (rawSec && !rawSec.includes('No numbered sections detected')) {
             existingSections = rawSec
                 .split('\n')
@@ -58,9 +79,8 @@ async function upsertIndexNote(
         }
     }
 
-    const topicFolder = args.topic_folder
-        ? sanitizeTopicFolder(args.topic_folder)
-        : (existingFm.topic_folder || (args.subject ? sanitizeTopicFolder(args.subject) : 'Uncategorized'));
+    const rawCandidateTopic = args.topic_folder || existingFm.topic_folder || args.subject || 'Uncategorized';
+    const topicFolder = resolveConsistentTopicFolder(rawCandidateTopic, taxonomy.topicFolders);
 
     let currentFilePath: string = args.file_path || existingFm.file_path || '';
     if (!currentFilePath) {
@@ -83,8 +103,17 @@ async function upsertIndexNote(
         }
     }
 
+    // If title was refined by the Librarian, rename the index file to match the clean title if needed
+    const desiredIndexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
+    if (indexPath !== desiredIndexPath && await app.vault.adapter.exists(indexPath)) {
+        await app.vault.adapter.remove(indexPath);
+        indexPath = desiredIndexPath;
+    }
+
+    const docKind: DocumentKind = args.doc_kind || (existingFm.doc_kind as DocumentKind) || 'Paper';
     const subject = (args.subject || existingFm.subject || topicFolder || 'general').toLowerCase().trim();
-    const authors = args.author || existingFm.authors || 'Unknown';
+    const rawAuthorInput = args.author || existingFm.authors || 'Unknown';
+    const authors = normalizeAndDeduplicateAuthors(rawAuthorInput, taxonomy.canonicalAuthors);
     const sourceType = args.source_type || existingFm.type || 'PDF';
     const pages = Number(existingFm.pages) || 1;
     const sourceUrl = existingFm.source_url || '';
@@ -94,6 +123,7 @@ async function upsertIndexNote(
         : (typeof args.tags === 'string' ? (args.tags as string).split(',').map(s => s.trim()) : []);
     const existingTags = Array.isArray(existingFm.tags) ? existingFm.tags : [];
     const mergedTags = Array.from(new Set([
+        docKind.toLowerCase(),
         ...rawTags,
         ...existingTags,
         subject.replace(/\s+/g, '-')
@@ -109,6 +139,7 @@ async function upsertIndexNote(
     const md = buildIndexMarkdown({
         title: args.title || existingFm.title || safeBase.replace(/_/g, ' '),
         authors,
+        docKind,
         subject,
         topicFolder,
         tags: mergedTags,
@@ -123,41 +154,52 @@ async function upsertIndexNote(
     });
 
     await app.vault.adapter.write(indexPath, md);
-    return { indexPath, filePath: currentFilePath };
+    return { indexPath, filePath: currentFilePath, topicFolder, authors };
 }
 
 export function getLibrarianTools(app: App) {
     return [
         new FunctionTool({
             name: 'organize_and_index_document',
-            description: 'Organizes a downloaded/uploaded PDF or document into a topic-specific subfolder in DyResearch/Library/<Topic>/ and writes its concise index note in DyResearch/Library Index/ (containing ONLY metadata, abstract, summary, section titles, conclusions, and tags—never raw full text).',
+            description: 'Organizes a downloaded/uploaded Paper, Book, or Document into a consistent topic subfolder in DyResearch/Library/<Topic>/, deduplicates author names against the existing Library catalog, and writes its concise index note in DyResearch/Library Index/.',
             parameters: {
                 type: 'OBJECT' as any,
                 properties: {
-                    title: { type: 'STRING' as any, description: 'Document title.' },
-                    topic_folder: { type: 'STRING' as any, description: 'Topic subfolder name inside Library (e.g., "Machine Learning", "Game Theory").' },
+                    title: { type: 'STRING' as any, description: 'Clean document title.' },
+                    doc_kind: {
+                        type: 'STRING' as any,
+                        description: 'Document kind: "Paper", "Book", or "Document".'
+                    },
+                    topic_folder: {
+                        type: 'STRING' as any,
+                        description: 'Consistent topic subfolder name inside Library (reuse an existing folder if applicable, e.g., "Machine Learning", "Game Theory").'
+                    },
                     subject: { type: 'STRING' as any, description: 'Lowercase subject category (e.g., "machine learning").' },
-                    author: { type: 'STRING' as any, description: 'Author name(s).' },
+                    author: {
+                        type: 'STRING' as any,
+                        description: 'Comma-separated author names in "First Last" format (automatically deduplicated against existing authors).'
+                    },
                     tags: {
                         type: 'ARRAY' as any,
                         items: { type: 'STRING' as any },
                         description: 'List of relevant tags (e.g. ["transformers", "attention", "nlp"]).'
                     },
-                    abstract: { type: 'STRING' as any, description: 'The paper abstract.' },
+                    abstract: { type: 'STRING' as any, description: 'The paper abstract or book/document overview.' },
                     section_titles: {
                         type: 'ARRAY' as any,
                         items: { type: 'STRING' as any },
-                        description: 'List of section titles in the document (e.g. ["1 Introduction", "2 Background", "3 Model Architecture"]).'
+                        description: 'List of section or chapter titles in the document.'
                     },
                     summary: { type: 'STRING' as any, description: 'Concise structured summary of the document (key contributions and takeaways).' },
-                    conclusions: { type: 'STRING' as any, description: 'Conclusions and future work of the document.' },
-                    file_path: { type: 'STRING' as any, description: 'Optional current path to the raw PDF in DyResearch/Library/.' }
+                    conclusions: { type: 'STRING' as any, description: 'Conclusions and key takeaways of the document.' },
+                    file_path: { type: 'STRING' as any, description: 'Optional current path to the raw file in DyResearch/Library/.' }
                 },
                 required: ['title', 'topic_folder', 'summary']
             },
             execute: async (args: any) => {
                 const res = await upsertIndexNote(app, {
                     title: args.title,
+                    doc_kind: args.doc_kind as DocumentKind,
                     topic_folder: args.topic_folder,
                     subject: args.subject || args.topic_folder?.toLowerCase(),
                     author: args.author,
@@ -168,7 +210,7 @@ export function getLibrarianTools(app: App) {
                     conclusions: args.conclusions,
                     file_path: args.file_path
                 });
-                return `Organized raw file at "${res.filePath || 'N/A'}" and saved clean index card at "${res.indexPath}".`;
+                return `Organized raw file into "${res.filePath || 'N/A'}" (Topic: "${res.topicFolder}", Authors: "${res.authors}") and saved clean index card at "${res.indexPath}".`;
             }
         }),
         new FunctionTool({
@@ -178,9 +220,10 @@ export function getLibrarianTools(app: App) {
                 type: 'OBJECT' as any,
                 properties: {
                     title: { type: 'STRING' as any, description: 'Document title.' },
+                    doc_kind: { type: 'STRING' as any, description: '"Paper", "Book", or "Document".' },
                     subject: { type: 'STRING' as any, description: 'Lowercase subject category.' },
                     topic_folder: { type: 'STRING' as any, description: 'Optional topic subfolder in DyResearch/Library (e.g. "Machine Learning").' },
-                    author: { type: 'STRING' as any, description: 'Author name.' },
+                    author: { type: 'STRING' as any, description: 'Author name(s).' },
                     source_type: { type: 'STRING' as any, description: 'Source type (PDF, Book, Web, Article).' },
                     content: { type: 'STRING' as any, description: 'Summary content to index.' }
                 },
@@ -189,6 +232,7 @@ export function getLibrarianTools(app: App) {
             execute: async (args: any) => {
                 const res = await upsertIndexNote(app, {
                     title: args.title,
+                    doc_kind: args.doc_kind as DocumentKind,
                     subject: args.subject,
                     topic_folder: args.topic_folder,
                     author: args.author,
@@ -205,9 +249,10 @@ export function getLibrarianTools(app: App) {
                 type: 'OBJECT' as any,
                 properties: {
                     title: { type: 'STRING' as any, description: 'Document title.' },
+                    doc_kind: { type: 'STRING' as any, description: '"Paper", "Book", or "Document".' },
                     subject: { type: 'STRING' as any, description: 'Lowercase subject category.' },
                     topic_folder: { type: 'STRING' as any, description: 'Optional topic subfolder in DyResearch/Library (e.g. "Machine Learning").' },
-                    author: { type: 'STRING' as any, description: 'Author name.' },
+                    author: { type: 'STRING' as any, description: 'Author name(s).' },
                     source_type: { type: 'STRING' as any, description: 'Source type (PDF, Book, Web, Article).' },
                     content: { type: 'STRING' as any, description: 'Structured summary content.' }
                 },
@@ -216,6 +261,7 @@ export function getLibrarianTools(app: App) {
             execute: async (args: any) => {
                 const res = await upsertIndexNote(app, {
                     title: args.title,
+                    doc_kind: args.doc_kind as DocumentKind,
                     subject: args.subject,
                     topic_folder: args.topic_folder,
                     author: args.author,
@@ -227,15 +273,19 @@ export function getLibrarianTools(app: App) {
         }),
         new FunctionTool({
             name: 'list_available_sources',
-            description: 'Lists all documents, topic folders in DyResearch/Library, and indexed notes in DyResearch/Library Index.',
+            description: 'Lists all documents, existing topic subfolders in DyResearch/Library, canonical authors, and indexed notes in DyResearch/Library Index.',
             parameters: {
                 type: 'OBJECT' as any,
                 properties: {}
             },
             execute: async () => {
                 const entries = await listLibraryCatalog(app);
-                if (entries.length === 0) return 'No documents found in Library or Library Index.';
-                return JSON.stringify(entries, null, 2);
+                const taxonomy = await getExistingLibraryTaxonomy(app);
+                return JSON.stringify({
+                    existing_topic_folders: taxonomy.topicFolders,
+                    canonical_authors: taxonomy.canonicalAuthors,
+                    documents: entries
+                }, null, 2);
             }
         }),
         new FunctionTool({

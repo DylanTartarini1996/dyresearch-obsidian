@@ -626,16 +626,22 @@ var HistoryView = class extends import_obsidian3.ItemView {
   }
   async renderUploadSection(container) {
     const uploadContainer = container.createDiv({ cls: "upload-section" });
-    uploadContainer.createEl("h4", { text: "Upload File(s) to Library" });
+    uploadContainer.createEl("h4", { text: "Upload & Auto-Index to Library" });
     const metadataForm = uploadContainer.createDiv({ cls: "metadata-form" });
-    const subjectInput = metadataForm.createEl("input", { type: "text", placeholder: "Topic folder (e.g. Machine Learning)..." });
-    const authorsInput = metadataForm.createEl("input", { type: "text", placeholder: "Authors..." });
+    const docKindSelect = metadataForm.createEl("select", { cls: "dy-doc-kind-select" });
+    docKindSelect.createEl("option", { value: "Paper", text: "\u{1F4C4} Academic Paper" });
+    docKindSelect.createEl("option", { value: "Book", text: "\u{1F4D8} Book / Textbook" });
+    docKindSelect.createEl("option", { value: "Document", text: "\u{1F4D1} General Document" });
+    const topicHintInput = metadataForm.createEl("input", {
+      type: "text",
+      placeholder: "Topic hint (auto if empty)..."
+    });
     const fileInput = uploadContainer.createEl("input", {
       attr: { type: "file", multiple: "true", accept: ".pdf,.md,.docx,.txt" },
       cls: "hidden-file-input"
     });
     const uploadBtn = uploadContainer.createEl("button", {
-      text: "\u{1F4C1} Select & Upload Docs",
+      text: "\u{1F4C1} Select & Index File(s)",
       cls: "dy-upload-btn"
     });
     uploadBtn.onClickEvent(() => fileInput.click());
@@ -646,17 +652,23 @@ var HistoryView = class extends import_obsidian3.ItemView {
       uploadBtn.disabled = true;
       try {
         for (const file of Array.from(fileInput.files)) {
-          await this.plugin.engine.ingestFile(file, {
-            subject: subjectInput.value.trim(),
-            authors: authorsInput.value.trim()
-          });
+          await this.plugin.engine.ingestFile(
+            file,
+            {
+              docKind: docKindSelect.value,
+              topicHint: topicHintInput.value.trim()
+            },
+            (statusText) => {
+              uploadBtn.setText(statusText);
+            }
+          );
         }
-        new import_obsidian3.Notice(`Files ingested successfully!`);
+        topicHintInput.value = "";
         this.refreshView();
       } catch (err) {
         new import_obsidian3.Notice("Upload failed.");
       } finally {
-        uploadBtn.setText("\u{1F4C1} Select & Upload Docs");
+        uploadBtn.setText("\u{1F4C1} Select & Index File(s)");
         uploadBtn.disabled = false;
         fileInput.value = "";
       }
@@ -678,6 +690,9 @@ var HistoryView = class extends import_obsidian3.ItemView {
           const header = card.createDiv({ cls: "library-card-header" });
           const titleInfo = header.createDiv({ cls: "library-title-group" });
           titleInfo.createEl("strong", { text: doc.title });
+          if (doc.docKind) {
+            titleInfo.createEl("span", { text: doc.docKind, cls: "badge-kind" });
+          }
           titleInfo.createEl("span", { text: doc.type, cls: "badge-type" });
           const libDeleteBtn = header.createEl("button", {
             cls: "dy-delete-btn-small",
@@ -31857,12 +31872,146 @@ function sanitizeFileName(name) {
   return name.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") || "Document";
 }
 function sanitizeTopicFolder(topic) {
-  return topic.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
+  return topic.replace(/[\\/:*?"<>|_-]/g, " ").replace(/\s+/g, " ").trim();
+}
+function cleanSingleAuthorName(raw) {
+  let cleaned = raw.replace(/\S+@\S+\.\S+/g, "").replace(/[∗*†‡§¶∥#0-9]+/g, " ").replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim();
+  if (cleaned.includes(",")) {
+    const parts = cleaned.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length === 2 && !/^(Jr\.?|Sr\.?|II|III|IV|Ph\.?D\.?|MD)$/i.test(parts[1])) {
+      cleaned = `${parts[1]} ${parts[0]}`;
+    }
+  }
+  return cleaned.replace(/^[,.\-\s]+|[,.\-\s]+$/g, "").trim();
+}
+function parseNameTokens(name) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2)
+    return null;
+  const first = parts[0].replace(/\./g, "").toLowerCase();
+  const last = parts[parts.length - 1].replace(/\./g, "").toLowerCase();
+  const middle = parts.slice(1, -1).map((m7) => m7.replace(/\./g, "").toLowerCase());
+  return { first, middle, last };
+}
+function areAuthorsEquivalent(nameA, nameB) {
+  const normA = nameA.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+  const normB = nameB.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+  if (normA === normB)
+    return true;
+  const tokA = parseNameTokens(nameA);
+  const tokB = parseNameTokens(nameB);
+  if (!tokA || !tokB)
+    return false;
+  if (tokA.last !== tokB.last)
+    return false;
+  const firstMatch = tokA.first === tokB.first || tokA.first.length === 1 && tokB.first.startsWith(tokA.first) || tokB.first.length === 1 && tokA.first.startsWith(tokB.first);
+  if (!firstMatch)
+    return false;
+  if (tokA.middle.length > 0 && tokB.middle.length > 0) {
+    const mA3 = tokA.middle[0];
+    const mB2 = tokB.middle[0];
+    if (mA3[0] !== mB2[0])
+      return false;
+  }
+  return true;
+}
+function normalizeAndDeduplicateAuthors(rawAuthors, existingCanonicalAuthors = []) {
+  let rawList;
+  if (Array.isArray(rawAuthors)) {
+    rawList = rawAuthors;
+  } else if (/[;\n]/.test(rawAuthors)) {
+    rawList = rawAuthors.split(/[;&\n]+/);
+  } else {
+    const commaParts = rawAuthors.split(",").map((s) => s.trim()).filter(Boolean);
+    const isSingleLastFirst = commaParts.length === 2 && !/\band\b/i.test(rawAuthors) && commaParts[0].split(/\s+/).length === 1 && commaParts[1].split(/\s+/).length <= 2;
+    if (isSingleLastFirst) {
+      rawList = [rawAuthors];
+    } else {
+      rawList = rawAuthors.replace(/\band\b/gi, ",").split(/[,&\n]+/);
+    }
+  }
+  const candidates = rawList.map(cleanSingleAuthorName).filter((name) => name.length >= 2 && !/^(unknown|et al\.?|others|n\/a)$/i.test(name));
+  if (candidates.length === 0)
+    return "Unknown";
+  const deduplicated = [];
+  for (const candidate of candidates) {
+    let bestName = candidate;
+    for (const existing of existingCanonicalAuthors) {
+      if (areAuthorsEquivalent(bestName, existing)) {
+        const cleanCandidateLen = bestName.replace(/\./g, "").length;
+        const cleanExistingLen = existing.replace(/\./g, "").length;
+        bestName = cleanExistingLen >= cleanCandidateLen ? existing : bestName;
+        break;
+      }
+    }
+    const existingIdx = deduplicated.findIndex((already) => areAuthorsEquivalent(bestName, already));
+    if (existingIdx !== -1) {
+      const already = deduplicated[existingIdx];
+      if (bestName.replace(/\./g, "").length > already.replace(/\./g, "").length) {
+        deduplicated[existingIdx] = bestName;
+      }
+    } else {
+      deduplicated.push(bestName);
+    }
+  }
+  return deduplicated.length > 0 ? deduplicated.join(", ") : "Unknown";
+}
+function resolveConsistentTopicFolder(candidateTopic, existingFolders) {
+  const cleaned = sanitizeTopicFolder(candidateTopic);
+  if (!cleaned || /^uncategorized$/i.test(cleaned))
+    return "Uncategorized";
+  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "").replace(/s$/, "");
+  const targetNorm = norm(cleaned);
+  for (const folder of existingFolders) {
+    if (!folder || /^uncategorized$/i.test(folder))
+      continue;
+    if (norm(folder) === targetNorm) {
+      return folder;
+    }
+  }
+  return cleaned.split(" ").map((w) => w.length > 2 || w === cleaned.split(" ")[0] ? w.charAt(0).toUpperCase() + w.slice(1) : w.toLowerCase()).join(" ");
+}
+var INSTITUTION_OR_NOISE_REGEX = /\b(university|institute|department|laboratory|research|google|microsoft|facebook|meta|openai|deepmind|college|school|hospital|inc\.|corp\.|ltd\.|abstract|introduction|contents|chapter|preface|copyright|isbn|arxiv|proceedings|conference|journal|volume|permission|reproduce|attribution|hereby|grants|equal contribution)\b/i;
+function inferTitleAndAuthorsFromHeader(rawText) {
+  const firstPage = rawText.split(/-- 1 of \d+ --/)[0] || rawText.slice(0, 3e3);
+  const beforeAbstract = firstPage.split(/(?:^|\n)\s*(?:Abstract|1\.?\s+Introduction|Contents|Table of Contents)\b/i)[0] || firstPage.slice(0, 1500);
+  const lines = beforeAbstract.split("\n").map((l) => l.trim()).filter((l) => l.length > 2 && !/@/.test(l) && !/^https?:\/\//i.test(l));
+  const cleanLines = lines.filter((l) => !INSTITUTION_OR_NOISE_REGEX.test(l));
+  let inferredTitle;
+  let titleIdx = -1;
+  for (let i = 0; i < Math.min(cleanLines.length, 6); i++) {
+    const line = cleanLines[i];
+    if (line.length >= 6 && line.length <= 140 && !/^\d+$/.test(line)) {
+      inferredTitle = line.replace(/[∗*†‡]+$/g, "").trim();
+      titleIdx = lines.indexOf(line);
+      break;
+    }
+  }
+  const authorCandidates = [];
+  const startIdx = titleIdx !== -1 ? titleIdx + 1 : 1;
+  for (let i = startIdx; i < lines.length; i++) {
+    const line = lines[i];
+    if (INSTITUTION_OR_NOISE_REGEX.test(line))
+      continue;
+    if (/@/.test(line))
+      continue;
+    const segments = line.replace(/\band\b/gi, ",").split(/[,;]+/).map(cleanSingleAuthorName).filter(Boolean);
+    for (const seg of segments) {
+      const words = seg.split(/\s+/);
+      if (words.length >= 2 && words.length <= 4 && words.every((w) => /^[A-ZŁŚŻŹĆŃÓÁÉÍÓÚÄÖÜ][a-zA-Z0-9.\-łśżźćńóáéíóúäöü']*$/.test(w)) && !INSTITUTION_OR_NOISE_REGEX.test(seg)) {
+        authorCandidates.push(seg);
+      }
+    }
+  }
+  return {
+    inferredTitle,
+    inferredAuthors: authorCandidates.length > 0 ? authorCandidates.join(", ") : void 0
+  };
 }
 function parseAcademicStructure(rawText) {
   const cleanText = rawText.replace(/\r\n/g, "\n");
   let abstractText = "";
-  const absMatch = cleanText.match(/(?:^|\n)\s*Abstract\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:1\.?\s+Introduction|I\.?\s+Introduction|Keywords|Index Terms|-- 1 of|\n\n\d+\s+[A-Z]))/i);
+  const absMatch = cleanText.match(/(?:^|\n)\s*(?:Abstract|Executive Summary|Overview|Preface)\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:1\.?\s+Introduction|I\.?\s+Introduction|Chapter\s+1|Keywords|Index Terms|-- 1 of|\n\n\d+\s+[A-Z]))/i);
   if (absMatch) {
     abstractText = absMatch[1].split("\n").filter((line) => !/^[∗†‡]\s*(Equal contribution|Work performed)/i.test(line.trim())).filter((line) => !/Conference on Neural Information Processing|arXiv:/i.test(line.trim())).join(" ").replace(/\s+/g, " ").trim();
   }
@@ -31871,13 +32020,21 @@ function parseAcademicStructure(rawText) {
   const lines = cleanText.split("\n");
   for (const rawLine of lines) {
     const line = rawLine.trim();
-    if (line.length < 4 || line.length > 85)
+    if (line.length < 4 || line.length > 90)
       continue;
+    const chapMatch = line.match(/^(?:Chapter|Part|Section)\s+(\d+|[IVXLCDM]+)[:.\-\s]+([A-Z][A-Za-z0-9\s\-:,()]+)$/i);
     const secMatch = line.match(/^(\d+(?:\.\d+){0,2})\.?\s+([A-Z][A-Za-z0-9\s\-:,()]+)$/);
-    if (secMatch) {
+    if (chapMatch) {
+      const heading = `Chapter ${chapMatch[1]}: ${chapMatch[2].trim()}`;
+      const norm = heading.toLowerCase();
+      if (!seenSections.has(norm)) {
+        seenSections.add(norm);
+        sectionTitles.push(heading);
+      }
+    } else if (secMatch) {
       const num = secMatch[1];
       const topNum = parseInt(num.split(".")[0], 10);
-      if (topNum >= 1 && topNum <= 20) {
+      if (topNum >= 1 && topNum <= 30) {
         const heading = `${num} ${secMatch[2].trim()}`;
         const norm = heading.toLowerCase();
         if (!seenSections.has(norm)) {
@@ -31888,14 +32045,17 @@ function parseAcademicStructure(rawText) {
     }
   }
   let conclusionsText = "";
-  const concMatch = cleanText.match(/(?:^|\n)\s*(?:\d+\.?\s+)?Conclusions?(?:\s+and\s+Future\s+Work)?\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:Acknowledgements?|Acknowledgments?|References|Bibliography|Appendix|-- \d+ of))/i);
+  const concMatch = cleanText.match(/(?:^|\n)\s*(?:\d+\.?\s+)?(?:Conclusions?|Summary and Conclusions|Concluding Remarks)(?:\s+and\s+Future\s+Work)?\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:Acknowledgements?|Acknowledgments?|References|Bibliography|Appendix|-- \d+ of))/i);
   if (concMatch) {
     conclusionsText = concMatch[1].replace(/\n-- \d+ of \d+ --\n/g, " ").replace(/\s+/g, " ").trim();
   }
+  const { inferredTitle, inferredAuthors } = inferTitleAndAuthorsFromHeader(cleanText);
   return {
     abstractText,
     sectionTitles,
-    conclusionsText
+    conclusionsText,
+    inferredTitle,
+    inferredAuthors
   };
 }
 async function extractPdfTextAndInfo(buffer) {
@@ -31940,6 +32100,8 @@ async function extractPdfTextAndInfo(buffer) {
       totalPages,
       infoTitle,
       infoAuthor,
+      inferredTitle: structure.inferredTitle,
+      inferredAuthors: structure.inferredAuthors,
       abstractText: structure.abstractText,
       sectionTitles: structure.sectionTitles,
       conclusionsText: structure.conclusionsText
@@ -31950,12 +32112,50 @@ async function extractPdfTextAndInfo(buffer) {
     }
   }
 }
+async function getExistingLibraryTaxonomy(app) {
+  const catalog = await listLibraryCatalog(app);
+  const folderSet = /* @__PURE__ */ new Set();
+  const authorList = [];
+  if (await app.vault.adapter.exists(LIBRARY_DIR)) {
+    const listed = await app.vault.adapter.list(LIBRARY_DIR);
+    for (const f7 of listed.folders) {
+      const rel = f7.slice(LIBRARY_DIR.length + 1);
+      if (rel && !rel.startsWith(".") && !/^uncategorized$/i.test(rel)) {
+        folderSet.add(rel);
+      }
+    }
+  }
+  for (const entry of catalog) {
+    if (entry.topicFolder && !/^uncategorized$/i.test(entry.topicFolder)) {
+      folderSet.add(entry.topicFolder);
+    }
+    if (entry.authors && entry.authors !== "Unknown") {
+      const split = entry.authors.split(",").map((a7) => cleanSingleAuthorName(a7)).filter(Boolean);
+      for (const a7 of split) {
+        const existingIdx = authorList.findIndex((ex2) => areAuthorsEquivalent(a7, ex2));
+        if (existingIdx !== -1) {
+          if (a7.replace(/\./g, "").length > authorList[existingIdx].replace(/\./g, "").length) {
+            authorList[existingIdx] = a7;
+          }
+        } else {
+          authorList.push(a7);
+        }
+      }
+    }
+  }
+  return {
+    topicFolders: Array.from(folderSet),
+    canonicalAuthors: authorList
+  };
+}
 async function saveAndIndexDocument(app, options) {
   await ensureVaultFolder(app, LIBRARY_DIR);
   await ensureVaultFolder(app, LIBRARY_INDEX_DIR);
+  const taxonomy = await getExistingLibraryTaxonomy(app);
   const extMatch = options.filename.match(/\.(pdf|docx|md|txt)$/i);
   const ext = extMatch ? extMatch[1].toLowerCase() : "pdf";
   const rawBaseName = options.filename.replace(/\.(pdf|docx|md|txt)$/i, "");
+  const docKind = options.docKind || "Paper";
   let extractedText = "";
   let totalPages = 1;
   let detectedTitle = options.title?.trim() || "";
@@ -31970,11 +32170,11 @@ async function saveAndIndexDocument(app, options) {
     abstractText = pdfData.abstractText;
     sectionTitles = pdfData.sectionTitles;
     conclusionsText = pdfData.conclusionsText;
-    if (!detectedTitle && pdfData.infoTitle && pdfData.infoTitle.length > 2) {
-      detectedTitle = pdfData.infoTitle;
+    if (!detectedTitle) {
+      detectedTitle = pdfData.infoTitle && pdfData.infoTitle.length > 2 ? pdfData.infoTitle : pdfData.inferredTitle || "";
     }
-    if (!detectedAuthors && pdfData.infoAuthor && pdfData.infoAuthor.length > 1) {
-      detectedAuthors = pdfData.infoAuthor;
+    if (!detectedAuthors) {
+      detectedAuthors = pdfData.infoAuthor && pdfData.infoAuthor.length > 1 ? pdfData.infoAuthor : pdfData.inferredAuthors || "";
     }
   } else if (ext === "md" || ext === "txt") {
     extractedText = new TextDecoder("utf-8").decode(options.buffer.slice(0));
@@ -31982,17 +32182,22 @@ async function saveAndIndexDocument(app, options) {
     abstractText = structure.abstractText;
     sectionTitles = structure.sectionTitles;
     conclusionsText = structure.conclusionsText;
+    if (!detectedTitle && structure.inferredTitle)
+      detectedTitle = structure.inferredTitle;
+    if (!detectedAuthors && structure.inferredAuthors)
+      detectedAuthors = structure.inferredAuthors;
   }
   const finalTitle = detectedTitle || rawBaseName.replace(/_/g, " ") || "Untitled Document";
-  const finalAuthors = detectedAuthors || "Unknown";
-  const topicFolder = options.topicFolder ? sanitizeTopicFolder(options.topicFolder) : "";
-  const subject = (options.subject || topicFolder || "general").toLowerCase().trim();
-  const safeBase = sanitizeFileName(options.title || rawBaseName);
-  const targetFolder = topicFolder ? `${LIBRARY_DIR}/${topicFolder}` : LIBRARY_DIR;
+  const finalAuthors = normalizeAndDeduplicateAuthors(detectedAuthors || "Unknown", taxonomy.canonicalAuthors);
+  const resolvedTopic = options.topicFolder ? resolveConsistentTopicFolder(options.topicFolder, taxonomy.topicFolders) : "";
+  const subject = (options.subject || resolvedTopic || "general").toLowerCase().trim();
+  const safeBase = sanitizeFileName(finalTitle || rawBaseName);
+  const targetFolder = resolvedTopic && resolvedTopic !== "Uncategorized" ? `${LIBRARY_DIR}/${resolvedTopic}` : LIBRARY_DIR;
   await ensureVaultFolder(app, targetFolder);
   const filePath = `${targetFolder}/${safeBase}.${ext}`;
   await writeVaultBinary(app, filePath, options.buffer);
   const defaultTags = [
+    docKind.toLowerCase(),
     subject.replace(/\s+/g, "-").replace(/[^a-z0-9-_]/gi, ""),
     ext
   ].filter(Boolean);
@@ -32001,8 +32206,9 @@ async function saveAndIndexDocument(app, options) {
   const indexMarkdown = buildIndexMarkdown({
     title: finalTitle,
     authors: finalAuthors,
+    docKind,
     subject,
-    topicFolder: topicFolder || "Uncategorized",
+    topicFolder: resolvedTopic || "Uncategorized",
     tags: allTags,
     type: ext.toUpperCase(),
     pages: totalPages,
@@ -32017,10 +32223,11 @@ async function saveAndIndexDocument(app, options) {
   return {
     filePath,
     indexPath,
+    docKind,
     title: finalTitle,
     authors: finalAuthors,
     subject,
-    topicFolder: topicFolder || "Uncategorized",
+    topicFolder: resolvedTopic || "Uncategorized",
     totalPages,
     totalChars: extractedText.length,
     abstractText,
@@ -32030,12 +32237,16 @@ async function saveAndIndexDocument(app, options) {
   };
 }
 function buildIndexMarkdown(fields) {
+  const docKind = fields.docKind || "Paper";
   const tagLines = fields.tags.length > 0 ? fields.tags.map((t) => `  - ${t.replace(/^#/, "").trim()}`).join("\n") : "  - research";
+  const sectionsHeading = docKind === "Book" ? "## Chapters & Table of Contents" : docKind === "Document" ? "## Key Sections & Outline" : "## Section Titles";
+  const abstractHeading = docKind === "Book" ? "## Book Overview" : docKind === "Document" ? "## Overview" : "## Abstract";
   const sectionsList = fields.sectionTitles && fields.sectionTitles.length > 0 ? fields.sectionTitles.map((s) => `- ${s}`).join("\n") : "- *(No numbered sections detected)*";
   const blocks = [
     "---",
     `title: "${fields.title.replace(/"/g, '\\"')}"`,
     `authors: "${fields.authors.replace(/"/g, '\\"')}"`,
+    `doc_kind: "${docKind}"`,
     `subject: "${fields.subject.toLowerCase()}"`,
     `topic_folder: "${fields.topicFolder.replace(/"/g, '\\"')}"`,
     "tags:",
@@ -32049,6 +32260,7 @@ function buildIndexMarkdown(fields) {
     "",
     `# ${fields.title}`,
     "",
+    `- **Document Kind**: ${docKind}`,
     `- **Original File**: [[${fields.filePath}|${fields.filePath.split("/").pop()}]]`,
     `- **Topic Folder**: ${fields.topicFolder}`,
     `- **Subject**: ${fields.subject}`,
@@ -32058,12 +32270,12 @@ function buildIndexMarkdown(fields) {
     ""
   ];
   if (fields.abstractText && fields.abstractText.trim()) {
-    blocks.push("## Abstract", fields.abstractText.trim(), "");
+    blocks.push(abstractHeading, fields.abstractText.trim(), "");
   }
   if (fields.summary && fields.summary.trim()) {
     blocks.push("## Summary & Key Takeaways", fields.summary.trim(), "");
   }
-  blocks.push("## Section Titles", sectionsList, "");
+  blocks.push(sectionsHeading, sectionsList, "");
   if (fields.conclusionsText && fields.conclusionsText.trim()) {
     blocks.push("## Conclusions", fields.conclusionsText.trim(), "");
   }
@@ -32132,6 +32344,7 @@ async function listLibraryCatalog(app) {
       entriesMap.set(baseName.toLowerCase(), {
         title: fm2.title || baseName.replace(/_/g, " "),
         authors: fm2.authors || "Unknown",
+        docKind: fm2.doc_kind || "Paper",
         subject: fm2.subject || "general",
         topicFolder: fm2.topic_folder || "Uncategorized",
         type: fm2.type || "PDF",
@@ -32164,6 +32377,7 @@ async function listLibraryCatalog(app) {
       entriesMap.set(key, {
         title: baseName.replace(/_/g, " "),
         authors: "Unknown",
+        docKind: "Paper",
         subject: topicFolder.toLowerCase(),
         topicFolder,
         type: ext,
@@ -32181,8 +32395,16 @@ async function listLibraryCatalog(app) {
 async function upsertIndexNote(app, args) {
   await ensureVaultFolder(app, LIBRARY_DIR);
   await ensureVaultFolder(app, LIBRARY_INDEX_DIR);
+  const taxonomy = await getExistingLibraryTaxonomy(app);
   const safeBase = sanitizeFileName(args.title || "Untitled");
-  const indexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
+  let indexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
+  if (!await app.vault.adapter.exists(indexPath) && args.file_path) {
+    const fileBase = sanitizeFileName((args.file_path.split("/").pop() || "").replace(/\.[^.]+$/, ""));
+    const candidatePath = `${LIBRARY_INDEX_DIR}/${fileBase}.md`;
+    if (await app.vault.adapter.exists(candidatePath)) {
+      indexPath = candidatePath;
+    }
+  }
   let existingFm = {};
   let existingAbstract = "";
   let existingSections = [];
@@ -32191,15 +32413,16 @@ async function upsertIndexNote(app, args) {
   if (await app.vault.adapter.exists(indexPath)) {
     const existingMd = await app.vault.adapter.read(indexPath);
     existingFm = parseFrontmatter(existingMd);
-    existingAbstract = extractMarkdownSection(existingMd, "Abstract");
+    existingAbstract = extractMarkdownSection(existingMd, "Abstract") || extractMarkdownSection(existingMd, "Book Overview") || extractMarkdownSection(existingMd, "Overview");
     existingSummary = extractMarkdownSection(existingMd, "Summary & Key Takeaways");
     existingConclusions = extractMarkdownSection(existingMd, "Conclusions");
-    const rawSec = extractMarkdownSection(existingMd, "Section Titles");
+    const rawSec = extractMarkdownSection(existingMd, "Section Titles") || extractMarkdownSection(existingMd, "Chapters & Table of Contents") || extractMarkdownSection(existingMd, "Key Sections & Outline");
     if (rawSec && !rawSec.includes("No numbered sections detected")) {
       existingSections = rawSec.split("\n").map((l) => l.replace(/^\s*-\s*/, "").trim()).filter(Boolean);
     }
   }
-  const topicFolder = args.topic_folder ? sanitizeTopicFolder(args.topic_folder) : existingFm.topic_folder || (args.subject ? sanitizeTopicFolder(args.subject) : "Uncategorized");
+  const rawCandidateTopic = args.topic_folder || existingFm.topic_folder || args.subject || "Uncategorized";
+  const topicFolder = resolveConsistentTopicFolder(rawCandidateTopic, taxonomy.topicFolders);
   let currentFilePath = args.file_path || existingFm.file_path || "";
   if (!currentFilePath) {
     const allRaw = await listFilesRecursive(app, LIBRARY_DIR);
@@ -32220,14 +32443,22 @@ async function upsertIndexNote(app, args) {
       currentFilePath = newFilePath;
     }
   }
+  const desiredIndexPath = `${LIBRARY_INDEX_DIR}/${safeBase}.md`;
+  if (indexPath !== desiredIndexPath && await app.vault.adapter.exists(indexPath)) {
+    await app.vault.adapter.remove(indexPath);
+    indexPath = desiredIndexPath;
+  }
+  const docKind = args.doc_kind || existingFm.doc_kind || "Paper";
   const subject = (args.subject || existingFm.subject || topicFolder || "general").toLowerCase().trim();
-  const authors = args.author || existingFm.authors || "Unknown";
+  const rawAuthorInput = args.author || existingFm.authors || "Unknown";
+  const authors = normalizeAndDeduplicateAuthors(rawAuthorInput, taxonomy.canonicalAuthors);
   const sourceType = args.source_type || existingFm.type || "PDF";
   const pages = Number(existingFm.pages) || 1;
   const sourceUrl = existingFm.source_url || "";
   const rawTags = Array.isArray(args.tags) ? args.tags : typeof args.tags === "string" ? args.tags.split(",").map((s) => s.trim()) : [];
   const existingTags = Array.isArray(existingFm.tags) ? existingFm.tags : [];
   const mergedTags = Array.from(new Set([
+    docKind.toLowerCase(),
     ...rawTags,
     ...existingTags,
     subject.replace(/\s+/g, "-")
@@ -32239,6 +32470,7 @@ async function upsertIndexNote(app, args) {
   const md2 = buildIndexMarkdown({
     title: args.title || existingFm.title || safeBase.replace(/_/g, " "),
     authors,
+    docKind,
     subject,
     topicFolder,
     tags: mergedTags,
@@ -32252,40 +32484,51 @@ async function upsertIndexNote(app, args) {
     conclusionsText
   });
   await app.vault.adapter.write(indexPath, md2);
-  return { indexPath, filePath: currentFilePath };
+  return { indexPath, filePath: currentFilePath, topicFolder, authors };
 }
 function getLibrarianTools(app) {
   return [
     new Dt({
       name: "organize_and_index_document",
-      description: "Organizes a downloaded/uploaded PDF or document into a topic-specific subfolder in DyResearch/Library/<Topic>/ and writes its concise index note in DyResearch/Library Index/ (containing ONLY metadata, abstract, summary, section titles, conclusions, and tags\u2014never raw full text).",
+      description: "Organizes a downloaded/uploaded Paper, Book, or Document into a consistent topic subfolder in DyResearch/Library/<Topic>/, deduplicates author names against the existing Library catalog, and writes its concise index note in DyResearch/Library Index/.",
       parameters: {
         type: "OBJECT",
         properties: {
-          title: { type: "STRING", description: "Document title." },
-          topic_folder: { type: "STRING", description: 'Topic subfolder name inside Library (e.g., "Machine Learning", "Game Theory").' },
+          title: { type: "STRING", description: "Clean document title." },
+          doc_kind: {
+            type: "STRING",
+            description: 'Document kind: "Paper", "Book", or "Document".'
+          },
+          topic_folder: {
+            type: "STRING",
+            description: 'Consistent topic subfolder name inside Library (reuse an existing folder if applicable, e.g., "Machine Learning", "Game Theory").'
+          },
           subject: { type: "STRING", description: 'Lowercase subject category (e.g., "machine learning").' },
-          author: { type: "STRING", description: "Author name(s)." },
+          author: {
+            type: "STRING",
+            description: 'Comma-separated author names in "First Last" format (automatically deduplicated against existing authors).'
+          },
           tags: {
             type: "ARRAY",
             items: { type: "STRING" },
             description: 'List of relevant tags (e.g. ["transformers", "attention", "nlp"]).'
           },
-          abstract: { type: "STRING", description: "The paper abstract." },
+          abstract: { type: "STRING", description: "The paper abstract or book/document overview." },
           section_titles: {
             type: "ARRAY",
             items: { type: "STRING" },
-            description: 'List of section titles in the document (e.g. ["1 Introduction", "2 Background", "3 Model Architecture"]).'
+            description: "List of section or chapter titles in the document."
           },
           summary: { type: "STRING", description: "Concise structured summary of the document (key contributions and takeaways)." },
-          conclusions: { type: "STRING", description: "Conclusions and future work of the document." },
-          file_path: { type: "STRING", description: "Optional current path to the raw PDF in DyResearch/Library/." }
+          conclusions: { type: "STRING", description: "Conclusions and key takeaways of the document." },
+          file_path: { type: "STRING", description: "Optional current path to the raw file in DyResearch/Library/." }
         },
         required: ["title", "topic_folder", "summary"]
       },
       execute: async (args) => {
         const res = await upsertIndexNote(app, {
           title: args.title,
+          doc_kind: args.doc_kind,
           topic_folder: args.topic_folder,
           subject: args.subject || args.topic_folder?.toLowerCase(),
           author: args.author,
@@ -32296,7 +32539,7 @@ function getLibrarianTools(app) {
           conclusions: args.conclusions,
           file_path: args.file_path
         });
-        return `Organized raw file at "${res.filePath || "N/A"}" and saved clean index card at "${res.indexPath}".`;
+        return `Organized raw file into "${res.filePath || "N/A"}" (Topic: "${res.topicFolder}", Authors: "${res.authors}") and saved clean index card at "${res.indexPath}".`;
       }
     }),
     new Dt({
@@ -32306,9 +32549,10 @@ function getLibrarianTools(app) {
         type: "OBJECT",
         properties: {
           title: { type: "STRING", description: "Document title." },
+          doc_kind: { type: "STRING", description: '"Paper", "Book", or "Document".' },
           subject: { type: "STRING", description: "Lowercase subject category." },
           topic_folder: { type: "STRING", description: 'Optional topic subfolder in DyResearch/Library (e.g. "Machine Learning").' },
-          author: { type: "STRING", description: "Author name." },
+          author: { type: "STRING", description: "Author name(s)." },
           source_type: { type: "STRING", description: "Source type (PDF, Book, Web, Article)." },
           content: { type: "STRING", description: "Summary content to index." }
         },
@@ -32317,6 +32561,7 @@ function getLibrarianTools(app) {
       execute: async (args) => {
         const res = await upsertIndexNote(app, {
           title: args.title,
+          doc_kind: args.doc_kind,
           subject: args.subject,
           topic_folder: args.topic_folder,
           author: args.author,
@@ -32333,9 +32578,10 @@ function getLibrarianTools(app) {
         type: "OBJECT",
         properties: {
           title: { type: "STRING", description: "Document title." },
+          doc_kind: { type: "STRING", description: '"Paper", "Book", or "Document".' },
           subject: { type: "STRING", description: "Lowercase subject category." },
           topic_folder: { type: "STRING", description: 'Optional topic subfolder in DyResearch/Library (e.g. "Machine Learning").' },
-          author: { type: "STRING", description: "Author name." },
+          author: { type: "STRING", description: "Author name(s)." },
           source_type: { type: "STRING", description: "Source type (PDF, Book, Web, Article)." },
           content: { type: "STRING", description: "Structured summary content." }
         },
@@ -32344,6 +32590,7 @@ function getLibrarianTools(app) {
       execute: async (args) => {
         const res = await upsertIndexNote(app, {
           title: args.title,
+          doc_kind: args.doc_kind,
           subject: args.subject,
           topic_folder: args.topic_folder,
           author: args.author,
@@ -32355,16 +32602,19 @@ function getLibrarianTools(app) {
     }),
     new Dt({
       name: "list_available_sources",
-      description: "Lists all documents, topic folders in DyResearch/Library, and indexed notes in DyResearch/Library Index.",
+      description: "Lists all documents, existing topic subfolders in DyResearch/Library, canonical authors, and indexed notes in DyResearch/Library Index.",
       parameters: {
         type: "OBJECT",
         properties: {}
       },
       execute: async () => {
         const entries = await listLibraryCatalog(app);
-        if (entries.length === 0)
-          return "No documents found in Library or Library Index.";
-        return JSON.stringify(entries, null, 2);
+        const taxonomy = await getExistingLibraryTaxonomy(app);
+        return JSON.stringify({
+          existing_topic_folders: taxonomy.topicFolders,
+          canonical_authors: taxonomy.canonicalAuthors,
+          documents: entries
+        }, null, 2);
       }
     }),
     new Dt({
@@ -32446,7 +32696,7 @@ function createLibrarianAgent(config, app) {
     name: "librarian_agent",
     model: config.model,
     description: "The system's archivist. Organizes raw PDFs/DOCX into topic subfolders in DyResearch/Library/ and maintains rich indexed Markdown notes in DyResearch/Library Index/.",
-    instruction: "You are the Head Librarian of the DyResearch Team, administrator of the two-folder Library architecture:\n- `DyResearch/Library/<Topic>/`: stores raw `.pdf` and `.docx` files organized into topic-specific subfolders (e.g., `Machine Learning`, `Game Theory`, `Physics`).\n- `DyResearch/Library Index/`: stores concise indexed `.md` cards containing ONLY YAML frontmatter (title, authors, subject, topic_folder, tags, file_path), Abstract, Summary & Key Takeaways, Section Titles, and Conclusions\u2014never the full raw text.\n\n### PHASE 1: ORGANIZING & INDEXING DOCUMENTS\n1. Topic Subfolders: Whenever a PDF or document is downloaded or uploaded, use `organize_and_index_document` to place the raw PDF into a clear, human-readable `topic_folder` inside `DyResearch/Library/` (e.g., 'Machine Learning', 'Game Theory') and enrich its corresponding Markdown card in `DyResearch/Library Index/`.\n2. Concise Index Card: Provide `title`, `topic_folder`, lowercase `subject`, `author`, an array of `tags`, `abstract`, `section_titles`, `summary`, and `conclusions`. Keep the index note clean and structured.\n3. Web / Text Sources: For scraped web articles without a binary PDF, use `ingest_source_file` or `ingest_source_chunks` to index them into `DyResearch/Library Index/`.\n\n### PHASE 2: INVENTORY & DISCOVERY\n1. Use `list_available_sources` to inspect all documents, their topic subfolders in `DyResearch/Library/`, and their `indexPath` in `DyResearch/Library Index/`.\n\n### PHASE 3: DATABASE HYGIENE (DELETION PROTOCOL)\n1. Targeted Removal: Use `delete_source` with the document title to remove both the raw file and its index note.\n2. Bulk Purge: Use `delete_by_subject` ONLY when the user explicitly asks to wipe an entire category.\n\n### MANDATE\n- Never hallucinate a source or claim a PDF wasn't downloaded if it is in `DyResearch/Library/`.\n- Always report both the raw PDF path (`DyResearch/Library/<Topic>/...`) and the indexed note path (`DyResearch/Library Index/...`).",
+    instruction: "You are the Head Librarian of the DyResearch Team, administrator of the two-folder Library architecture:\n- `DyResearch/Library/<Topic>/`: stores raw `.pdf` and `.docx` files organized into topic-specific subfolders (e.g., `Machine Learning`, `Game Theory`, `Physics`).\n- `DyResearch/Library Index/`: stores concise indexed `.md` cards containing ONLY YAML frontmatter (title, authors, subject, topic_folder, tags, file_path), Abstract, Summary & Key Takeaways, Section Titles, and Conclusions\u2014never the full raw text.\n\n### PHASE 1: ORGANIZING & INDEXING DOCUMENTS\n1. Topic Subfolders & Taxonomy Consistency: First call `list_available_sources` to inspect `existing_topic_folders` and `canonical_authors`. Whenever a PDF or document is downloaded or uploaded, use `organize_and_index_document` to place the raw PDF into an existing `topic_folder` if semantically close, or create a clear Title Case subfolder inside `DyResearch/Library/` (e.g., 'Machine Learning', 'Game Theory').\n2. Document Kind & Author Deduplication: Provide `doc_kind` ('Paper', 'Book', or 'Document'), `title`, `topic_folder`, lowercase `subject`, `author` (normalized as 'First Last' and deduplicated against `canonical_authors`), an array of `tags`, `abstract`, `section_titles`, `summary`, and `conclusions`. Keep the index note clean and structured.\n3. Web / Text Sources: For scraped web articles without a binary PDF, use `ingest_source_file` or `ingest_source_chunks` to index them into `DyResearch/Library Index/`.\n\n### PHASE 2: INVENTORY & DISCOVERY\n1. Use `list_available_sources` to inspect all documents, their topic subfolders in `DyResearch/Library/`, and their `indexPath` in `DyResearch/Library Index/`.\n\n### PHASE 3: DATABASE HYGIENE (DELETION PROTOCOL)\n1. Targeted Removal: Use `delete_source` with the document title to remove both the raw file and its index note.\n2. Bulk Purge: Use `delete_by_subject` ONLY when the user explicitly asks to wipe an entire category.\n\n### MANDATE\n- Never hallucinate a source or claim a PDF wasn't downloaded if it is in `DyResearch/Library/`.\n- Always report both the raw PDF path (`DyResearch/Library/<Topic>/...`) and the indexed note path (`DyResearch/Library Index/...`).",
     tools
   });
 }
@@ -33033,23 +33283,78 @@ var DyResearchEngine = class {
   async renameSession(oldSessionId, newSessionId) {
     await this.sessionService.renameSession(oldSessionId, newSessionId);
   }
-  async ingestFile(file, metadata) {
+  async ingestFile(file, metadata, onProgress) {
     const MAX_SIZE = 25 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
       new import_obsidian6.Notice(`File ${file.name} exceeds the 25MB limit.`);
       return;
     }
+    const docKind = metadata?.docKind || "Paper";
+    const topicHint = metadata?.topicHint?.trim() || "";
+    onProgress?.(`\u{1F4C4} Extracting ${file.name}...`);
     const buffer = await file.arrayBuffer();
-    const topicFolder = metadata?.subject?.trim() || "";
     const saved = await saveAndIndexDocument(this.app, {
       buffer,
       filename: file.name,
+      docKind,
       title: file.name.replace(/\.[^.]+$/, "").replace(/_/g, " "),
-      authors: metadata?.authors?.trim() || void 0,
-      topicFolder: topicFolder || void 0,
-      subject: topicFolder ? topicFolder.toLowerCase() : "general"
+      topicFolder: topicHint || void 0,
+      subject: topicHint ? topicHint.toLowerCase() : void 0
     });
-    new import_obsidian6.Notice(`Saved ${file.name} to ${saved.filePath} and indexed ${saved.totalPages} page(s) in Library Index!`);
+    onProgress?.(`\u{1F916} Indexing "${saved.title}" with Librarian...`);
+    await this.autoIndexUploadedDocument(saved, docKind, topicHint);
+    new import_obsidian6.Notice(`Indexed ${docKind} "${saved.title}" into Library & Library Index!`);
+  }
+  async autoIndexUploadedDocument(saved, docKind, topicHint) {
+    const taxonomy = await getExistingLibraryTaxonomy(this.app);
+    const tempSessionId = `auto_index_${Date.now()}`;
+    const prompt = [
+      `A new ${docKind} has been uploaded to the Vault and needs to be organized and indexed.`,
+      ``,
+      `### UPLOADED DOCUMENT DETAILS`,
+      `- **Document Kind**: ${docKind}`,
+      `- **Current File Path**: ${saved.filePath}`,
+      `- **Current Index Path**: ${saved.indexPath}`,
+      `- **Extracted Title**: ${saved.title}`,
+      `- **Heuristically Extracted Authors**: ${saved.authors}`,
+      `- **Total Pages**: ${saved.totalPages}`,
+      `- **User Topic Hint**: ${topicHint || "None (infer automatically)"}`,
+      `- **Existing Library Topic Subfolders**: ${taxonomy.topicFolders.length > 0 ? JSON.stringify(taxonomy.topicFolders) : "None yet"}`,
+      `- **Existing Canonical Authors in Library**: ${taxonomy.canonicalAuthors.length > 0 ? JSON.stringify(taxonomy.canonicalAuthors) : "None yet"}`,
+      ``,
+      `### EXTRACTED STRUCTURE & TEXT PREVIEW`,
+      `- **Extracted Abstract / Overview**: ${saved.abstractText || "(Not directly detected)"}`,
+      `- **Extracted Section / Chapter Titles**: ${saved.sectionTitles.length > 0 ? JSON.stringify(saved.sectionTitles) : "(None detected)"}`,
+      `- **Extracted Conclusions**: ${saved.conclusionsText || "(Not directly detected)"}`,
+      `- **Text Preview (First Pages)**:`,
+      saved.textPreview.slice(0, 3500),
+      ``,
+      `### REQUIRED ACTIONS`,
+      `1. If the authors are "Unknown" or incomplete, or if this is a Book/Paper missing its overview/abstract in the preview above, use the **Researcher** (\`web_search\`) to look up the title "${saved.title}" and find the accurate authors and overview.`,
+      `2. Call the **Librarian** tool \`organize_and_index_document\` with:`,
+      `   - \`title\`: Clean official title of the ${docKind}`,
+      `   - \`doc_kind\`: "${docKind}"`,
+      `   - \`topic_folder\`: Choose an existing folder from ${JSON.stringify(taxonomy.topicFolders)} if the topic fits; otherwise create a clean, general topic folder name (e.g. "Machine Learning", "Game Theory", "Economics").`,
+      `   - \`subject\`: Lowercase subject matching the topic`,
+      `   - \`author\`: Comma-separated author names in "First Last" format, reusing any matching names from ${JSON.stringify(taxonomy.canonicalAuthors)}`,
+      `   - \`tags\`: 3 to 6 relevant lowercase tags`,
+      `   - \`abstract\`: Clean abstract or book/document overview`,
+      `   - \`section_titles\`: Array of main section or chapter titles`,
+      `   - \`summary\`: Concise, high-signal structured summary of the key contributions and takeaways`,
+      `   - \`conclusions\`: Concise conclusions and takeaways`,
+      `   - \`file_path\`: "${saved.filePath}"`
+    ].join("\n");
+    try {
+      for await (const _chunk of this.sendMessage(tempSessionId, prompt)) {
+      }
+    } catch (err) {
+      console.warn("Agent auto-indexing fallback (initial deterministic index preserved):", err);
+    } finally {
+      try {
+        await this.sessionService.deleteSession({ appName: "dyresearch", sessionId: tempSessionId });
+      } catch {
+      }
+    }
   }
   async getLibraryFiles() {
     return await listLibraryCatalog(this.app);

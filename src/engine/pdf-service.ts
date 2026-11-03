@@ -3,6 +3,8 @@ import { App, loadPdfJs } from 'obsidian';
 export const LIBRARY_DIR = 'DyResearch/Library';
 export const LIBRARY_INDEX_DIR = 'DyResearch/Library Index';
 
+export type DocumentKind = 'Paper' | 'Book' | 'Document';
+
 export async function ensureVaultFolder(app: App, folderPath: string) {
     const parts = folderPath.split('/').filter(Boolean);
     let current = '';
@@ -71,9 +73,173 @@ export function sanitizeFileName(name: string): string {
 
 export function sanitizeTopicFolder(topic: string): string {
     return topic
-        .replace(/[\\/:*?"<>|]/g, ' ')
+        .replace(/[\\/:*?"<>|_-]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
+}
+
+/**
+ * Cleans a single raw author name string:
+ * - Removes footnote symbols (*, ∗, †, ‡, §, numbers) and emails
+ * - Converts "Last, First" into "First Last"
+ */
+export function cleanSingleAuthorName(raw: string): string {
+    let cleaned = raw
+        .replace(/\S+@\S+\.\S+/g, '')
+        .replace(/[∗*†‡§¶∥#0-9]+/g, ' ')
+        .replace(/\([^)]*\)/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (cleaned.includes(',')) {
+        const parts = cleaned.split(',').map(p => p.trim()).filter(Boolean);
+        if (parts.length === 2 && !/^(Jr\.?|Sr\.?|II|III|IV|Ph\.?D\.?|MD)$/i.test(parts[1])) {
+            cleaned = `${parts[1]} ${parts[0]}`;
+        }
+    }
+
+    return cleaned.replace(/^[,.\-\s]+|[,.\-\s]+$/g, '').trim();
+}
+
+function parseNameTokens(name: string): { first: string; middle: string[]; last: string } | null {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length < 2) return null;
+    const first = parts[0].replace(/\./g, '').toLowerCase();
+    const last = parts[parts.length - 1].replace(/\./g, '').toLowerCase();
+    const middle = parts.slice(1, -1).map(m => m.replace(/\./g, '').toLowerCase());
+    return { first, middle, last };
+}
+
+/**
+ * Checks if two author names refer to the same person (e.g., "A. Vaswani" and "Ashish Vaswani",
+ * or "A. N. Gomez" and "Aidan N. Gomez").
+ */
+export function areAuthorsEquivalent(nameA: string, nameB: string): boolean {
+    const normA = nameA.toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
+    const normB = nameB.toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
+    if (normA === normB) return true;
+
+    const tokA = parseNameTokens(nameA);
+    const tokB = parseNameTokens(nameB);
+    if (!tokA || !tokB) return false;
+
+    // Last names must match exactly
+    if (tokA.last !== tokB.last) return false;
+
+    // First name must match or one must be an initial of the other
+    const firstMatch =
+        tokA.first === tokB.first ||
+        (tokA.first.length === 1 && tokB.first.startsWith(tokA.first)) ||
+        (tokB.first.length === 1 && tokA.first.startsWith(tokB.first));
+    if (!firstMatch) return false;
+
+    // If both have middle tokens, their first initials must be compatible
+    if (tokA.middle.length > 0 && tokB.middle.length > 0) {
+        const mA = tokA.middle[0];
+        const mB = tokB.middle[0];
+        if (mA[0] !== mB[0]) return false;
+    }
+
+    return true;
+}
+
+/**
+ * Normalizes and deduplicates a list or comma-separated string of author names
+ * against the existing canonical authors in the Library Index.
+ * Always prefers the fuller version of a name (e.g. "Ashish Vaswani" over "A. Vaswani").
+ */
+export function normalizeAndDeduplicateAuthors(
+    rawAuthors: string | string[],
+    existingCanonicalAuthors: string[] = []
+): string {
+    let rawList: string[];
+    if (Array.isArray(rawAuthors)) {
+        rawList = rawAuthors;
+    } else if (/[;\n]/.test(rawAuthors)) {
+        // Semicolon or newline delimited list (often contains "Last, First" entries)
+        rawList = rawAuthors.split(/[;&\n]+/);
+    } else {
+        // Check if the entire string is a single "Last, First" author name
+        const commaParts = rawAuthors.split(',').map(s => s.trim()).filter(Boolean);
+        const isSingleLastFirst =
+            commaParts.length === 2 &&
+            !/\band\b/i.test(rawAuthors) &&
+            commaParts[0].split(/\s+/).length === 1 &&
+            commaParts[1].split(/\s+/).length <= 2;
+        if (isSingleLastFirst) {
+            rawList = [rawAuthors];
+        } else {
+            rawList = rawAuthors
+                .replace(/\band\b/gi, ',')
+                .split(/[,&\n]+/);
+        }
+    }
+
+    const candidates = rawList
+        .map(cleanSingleAuthorName)
+        .filter(name => name.length >= 2 && !/^(unknown|et al\.?|others|n\/a)$/i.test(name));
+
+    if (candidates.length === 0) return 'Unknown';
+
+    const deduplicated: string[] = [];
+
+    for (const candidate of candidates) {
+        let bestName = candidate;
+
+        // 1. Check against existing canonical authors in the vault
+        for (const existing of existingCanonicalAuthors) {
+            if (areAuthorsEquivalent(bestName, existing)) {
+                // Prefer whichever name is more complete (longer without periods)
+                const cleanCandidateLen = bestName.replace(/\./g, '').length;
+                const cleanExistingLen = existing.replace(/\./g, '').length;
+                bestName = cleanExistingLen >= cleanCandidateLen ? existing : bestName;
+                break;
+            }
+        }
+
+        // 2. Check against authors already added to this document's list
+        const existingIdx = deduplicated.findIndex(already => areAuthorsEquivalent(bestName, already));
+        if (existingIdx !== -1) {
+            const already = deduplicated[existingIdx];
+            if (bestName.replace(/\./g, '').length > already.replace(/\./g, '').length) {
+                deduplicated[existingIdx] = bestName;
+            }
+        } else {
+            deduplicated.push(bestName);
+        }
+    }
+
+    return deduplicated.length > 0 ? deduplicated.join(', ') : 'Unknown';
+}
+
+/**
+ * Matches a candidate topic folder against existing folders in DyResearch/Library
+ * so we reuse existing folders (e.g., "Machine Learning" vs "machine-learning" or "Machine Learnings").
+ */
+export function resolveConsistentTopicFolder(
+    candidateTopic: string,
+    existingFolders: string[]
+): string {
+    const cleaned = sanitizeTopicFolder(candidateTopic);
+    if (!cleaned || /^uncategorized$/i.test(cleaned)) return 'Uncategorized';
+
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/s$/, '');
+    const targetNorm = norm(cleaned);
+
+    for (const folder of existingFolders) {
+        if (!folder || /^uncategorized$/i.test(folder)) continue;
+        if (norm(folder) === targetNorm) {
+            return folder;
+        }
+    }
+
+    // Title-case if creating a new folder
+    return cleaned
+        .split(' ')
+        .map(w => w.length > 2 || w === cleaned.split(' ')[0]
+            ? w.charAt(0).toUpperCase() + w.slice(1)
+            : w.toLowerCase())
+        .join(' ');
 }
 
 export interface ExtractedPdfData {
@@ -81,24 +247,93 @@ export interface ExtractedPdfData {
     totalPages: number;
     infoTitle?: string;
     infoAuthor?: string;
+    inferredTitle?: string;
+    inferredAuthors?: string;
     abstractText: string;
     sectionTitles: string[];
     conclusionsText: string;
 }
 
+const INSTITUTION_OR_NOISE_REGEX = /\b(university|institute|department|laboratory|research|google|microsoft|facebook|meta|openai|deepmind|college|school|hospital|inc\.|corp\.|ltd\.|abstract|introduction|contents|chapter|preface|copyright|isbn|arxiv|proceedings|conference|journal|volume|permission|reproduce|attribution|hereby|grants|equal contribution)\b/i;
+
 /**
- * Extracts structured academic sections (Abstract, Section Titles, Conclusions) from raw PDF text.
+ * Heuristically infers title and author names from the first page header block (before Abstract/Introduction).
+ */
+export function inferTitleAndAuthorsFromHeader(rawText: string): {
+    inferredTitle?: string;
+    inferredAuthors?: string;
+} {
+    const firstPage = rawText.split(/-- 1 of \d+ --/)[0] || rawText.slice(0, 3000);
+    const beforeAbstract = firstPage.split(/(?:^|\n)\s*(?:Abstract|1\.?\s+Introduction|Contents|Table of Contents)\b/i)[0] || firstPage.slice(0, 1500);
+
+    const lines = beforeAbstract
+        .split('\n')
+        .map(l => l.trim())
+        .filter(l => l.length > 2 && !/@/.test(l) && !/^https?:\/\//i.test(l));
+
+    // Filter out top boilerplate/permission lines
+    const cleanLines = lines.filter(l => !INSTITUTION_OR_NOISE_REGEX.test(l));
+
+    let inferredTitle: string | undefined;
+    let titleIdx = -1;
+    for (let i = 0; i < Math.min(cleanLines.length, 6); i++) {
+        const line = cleanLines[i];
+        if (line.length >= 6 && line.length <= 140 && !/^\d+$/.test(line)) {
+            inferredTitle = line.replace(/[∗*†‡]+$/g, '').trim();
+            titleIdx = lines.indexOf(line);
+            break;
+        }
+    }
+
+    // Look for person-like names on the lines between the title and Abstract
+    const authorCandidates: string[] = [];
+    const startIdx = titleIdx !== -1 ? titleIdx + 1 : 1;
+    for (let i = startIdx; i < lines.length; i++) {
+        const line = lines[i];
+        if (INSTITUTION_OR_NOISE_REGEX.test(line)) continue;
+        if (/@/.test(line)) continue;
+
+        // Split line if multiple authors are separated by commas or "and"
+        const segments = line
+            .replace(/\band\b/gi, ',')
+            .split(/[,;]+/)
+            .map(cleanSingleAuthorName)
+            .filter(Boolean);
+
+        for (const seg of segments) {
+            const words = seg.split(/\s+/);
+            if (
+                words.length >= 2 &&
+                words.length <= 4 &&
+                words.every(w => /^[A-ZŁŚŻŹĆŃÓÁÉÍÓÚÄÖÜ][a-zA-Z0-9.\-łśżźćńóáéíóúäöü']*$/.test(w)) &&
+                !INSTITUTION_OR_NOISE_REGEX.test(seg)
+            ) {
+                authorCandidates.push(seg);
+            }
+        }
+    }
+
+    return {
+        inferredTitle,
+        inferredAuthors: authorCandidates.length > 0 ? authorCandidates.join(', ') : undefined
+    };
+}
+
+/**
+ * Extracts structured sections (Abstract/Overview, Section/Chapter Titles, Conclusions, and inferred Title/Authors)
  */
 export function parseAcademicStructure(rawText: string): {
     abstractText: string;
     sectionTitles: string[];
     conclusionsText: string;
+    inferredTitle?: string;
+    inferredAuthors?: string;
 } {
     const cleanText = rawText.replace(/\r\n/g, '\n');
 
-    // 1. Extract Abstract
+    // 1. Extract Abstract / Overview
     let abstractText = '';
-    const absMatch = cleanText.match(/(?:^|\n)\s*Abstract\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:1\.?\s+Introduction|I\.?\s+Introduction|Keywords|Index Terms|-- 1 of|\n\n\d+\s+[A-Z]))/i);
+    const absMatch = cleanText.match(/(?:^|\n)\s*(?:Abstract|Executive Summary|Overview|Preface)\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:1\.?\s+Introduction|I\.?\s+Introduction|Chapter\s+1|Keywords|Index Terms|-- 1 of|\n\n\d+\s+[A-Z]))/i);
     if (absMatch) {
         abstractText = absMatch[1]
             .split('\n')
@@ -109,18 +344,28 @@ export function parseAcademicStructure(rawText: string): {
             .trim();
     }
 
-    // 2. Extract numbered section and subsection titles (e.g., "1 Introduction", "3.2.1 Scaled Dot-Product Attention")
+    // 2. Extract numbered section/chapter titles (e.g., "1 Introduction", "3.2.1 Scaled Dot-Product Attention", "Chapter 1: ...")
     const sectionTitles: string[] = [];
     const seenSections = new Set<string>();
     const lines = cleanText.split('\n');
     for (const rawLine of lines) {
         const line = rawLine.trim();
-        if (line.length < 4 || line.length > 85) continue;
+        if (line.length < 4 || line.length > 90) continue;
+
+        const chapMatch = line.match(/^(?:Chapter|Part|Section)\s+(\d+|[IVXLCDM]+)[:.\-\s]+([A-Z][A-Za-z0-9\s\-:,()]+)$/i);
         const secMatch = line.match(/^(\d+(?:\.\d+){0,2})\.?\s+([A-Z][A-Za-z0-9\s\-:,()]+)$/);
-        if (secMatch) {
+
+        if (chapMatch) {
+            const heading = `Chapter ${chapMatch[1]}: ${chapMatch[2].trim()}`;
+            const norm = heading.toLowerCase();
+            if (!seenSections.has(norm)) {
+                seenSections.add(norm);
+                sectionTitles.push(heading);
+            }
+        } else if (secMatch) {
             const num = secMatch[1];
             const topNum = parseInt(num.split('.')[0], 10);
-            if (topNum >= 1 && topNum <= 20) {
+            if (topNum >= 1 && topNum <= 30) {
                 const heading = `${num} ${secMatch[2].trim()}`;
                 const norm = heading.toLowerCase();
                 if (!seenSections.has(norm)) {
@@ -133,7 +378,7 @@ export function parseAcademicStructure(rawText: string): {
 
     // 3. Extract Conclusions
     let conclusionsText = '';
-    const concMatch = cleanText.match(/(?:^|\n)\s*(?:\d+\.?\s+)?Conclusions?(?:\s+and\s+Future\s+Work)?\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:Acknowledgements?|Acknowledgments?|References|Bibliography|Appendix|-- \d+ of))/i);
+    const concMatch = cleanText.match(/(?:^|\n)\s*(?:\d+\.?\s+)?(?:Conclusions?|Summary and Conclusions|Concluding Remarks)(?:\s+and\s+Future\s+Work)?\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:Acknowledgements?|Acknowledgments?|References|Bibliography|Appendix|-- \d+ of))/i);
     if (concMatch) {
         conclusionsText = concMatch[1]
             .replace(/\n-- \d+ of \d+ --\n/g, ' ')
@@ -141,10 +386,14 @@ export function parseAcademicStructure(rawText: string): {
             .trim();
     }
 
+    const { inferredTitle, inferredAuthors } = inferTitleAndAuthorsFromHeader(cleanText);
+
     return {
         abstractText,
         sectionTitles,
-        conclusionsText
+        conclusionsText,
+        inferredTitle,
+        inferredAuthors
     };
 }
 
@@ -195,6 +444,8 @@ export async function extractPdfTextAndInfo(buffer: ArrayBuffer): Promise<Extrac
             totalPages,
             infoTitle,
             infoAuthor,
+            inferredTitle: structure.inferredTitle,
+            inferredAuthors: structure.inferredAuthors,
             abstractText: structure.abstractText,
             sectionTitles: structure.sectionTitles,
             conclusionsText: structure.conclusionsText
@@ -206,9 +457,54 @@ export async function extractPdfTextAndInfo(buffer: ArrayBuffer): Promise<Extrac
     }
 }
 
+export async function getExistingLibraryTaxonomy(app: App): Promise<{
+    topicFolders: string[];
+    canonicalAuthors: string[];
+}> {
+    const catalog = await listLibraryCatalog(app);
+    const folderSet = new Set<string>();
+    const authorList: string[] = [];
+
+    // Also inspect physical folders inside DyResearch/Library
+    if (await app.vault.adapter.exists(LIBRARY_DIR)) {
+        const listed = await app.vault.adapter.list(LIBRARY_DIR);
+        for (const f of listed.folders) {
+            const rel = f.slice(LIBRARY_DIR.length + 1);
+            if (rel && !rel.startsWith('.') && !/^uncategorized$/i.test(rel)) {
+                folderSet.add(rel);
+            }
+        }
+    }
+
+    for (const entry of catalog) {
+        if (entry.topicFolder && !/^uncategorized$/i.test(entry.topicFolder)) {
+            folderSet.add(entry.topicFolder);
+        }
+        if (entry.authors && entry.authors !== 'Unknown') {
+            const split = entry.authors.split(',').map(a => cleanSingleAuthorName(a)).filter(Boolean);
+            for (const a of split) {
+                const existingIdx = authorList.findIndex(ex => areAuthorsEquivalent(a, ex));
+                if (existingIdx !== -1) {
+                    if (a.replace(/\./g, '').length > authorList[existingIdx].replace(/\./g, '').length) {
+                        authorList[existingIdx] = a;
+                    }
+                } else {
+                    authorList.push(a);
+                }
+            }
+        }
+    }
+
+    return {
+        topicFolders: Array.from(folderSet),
+        canonicalAuthors: authorList
+    };
+}
+
 export interface SaveAndIndexOptions {
     buffer: ArrayBuffer;
     filename: string;
+    docKind?: DocumentKind;
     title?: string;
     authors?: string;
     subject?: string;
@@ -221,6 +517,7 @@ export interface SaveAndIndexOptions {
 export interface SaveAndIndexResult {
     filePath: string;
     indexPath: string;
+    docKind: DocumentKind;
     title: string;
     authors: string;
     subject: string;
@@ -240,9 +537,12 @@ export async function saveAndIndexDocument(
     await ensureVaultFolder(app, LIBRARY_DIR);
     await ensureVaultFolder(app, LIBRARY_INDEX_DIR);
 
+    const taxonomy = await getExistingLibraryTaxonomy(app);
+
     const extMatch = options.filename.match(/\.(pdf|docx|md|txt)$/i);
     const ext = extMatch ? extMatch[1].toLowerCase() : 'pdf';
     const rawBaseName = options.filename.replace(/\.(pdf|docx|md|txt)$/i, '');
+    const docKind: DocumentKind = options.docKind || 'Paper';
 
     let extractedText = '';
     let totalPages = 1;
@@ -259,11 +559,15 @@ export async function saveAndIndexDocument(
         abstractText = pdfData.abstractText;
         sectionTitles = pdfData.sectionTitles;
         conclusionsText = pdfData.conclusionsText;
-        if (!detectedTitle && pdfData.infoTitle && pdfData.infoTitle.length > 2) {
-            detectedTitle = pdfData.infoTitle;
+        if (!detectedTitle) {
+            detectedTitle = (pdfData.infoTitle && pdfData.infoTitle.length > 2)
+                ? pdfData.infoTitle
+                : (pdfData.inferredTitle || '');
         }
-        if (!detectedAuthors && pdfData.infoAuthor && pdfData.infoAuthor.length > 1) {
-            detectedAuthors = pdfData.infoAuthor;
+        if (!detectedAuthors) {
+            detectedAuthors = (pdfData.infoAuthor && pdfData.infoAuthor.length > 1)
+                ? pdfData.infoAuthor
+                : (pdfData.inferredAuthors || '');
         }
     } else if (ext === 'md' || ext === 'txt') {
         extractedText = new TextDecoder('utf-8').decode(options.buffer.slice(0));
@@ -271,21 +575,28 @@ export async function saveAndIndexDocument(
         abstractText = structure.abstractText;
         sectionTitles = structure.sectionTitles;
         conclusionsText = structure.conclusionsText;
+        if (!detectedTitle && structure.inferredTitle) detectedTitle = structure.inferredTitle;
+        if (!detectedAuthors && structure.inferredAuthors) detectedAuthors = structure.inferredAuthors;
     }
 
     const finalTitle = detectedTitle || rawBaseName.replace(/_/g, ' ') || 'Untitled Document';
-    const finalAuthors = detectedAuthors || 'Unknown';
-    const topicFolder = options.topicFolder ? sanitizeTopicFolder(options.topicFolder) : '';
-    const subject = (options.subject || topicFolder || 'general').toLowerCase().trim();
+    const finalAuthors = normalizeAndDeduplicateAuthors(detectedAuthors || 'Unknown', taxonomy.canonicalAuthors);
+    const resolvedTopic = options.topicFolder
+        ? resolveConsistentTopicFolder(options.topicFolder, taxonomy.topicFolders)
+        : '';
+    const subject = (options.subject || resolvedTopic || 'general').toLowerCase().trim();
 
-    const safeBase = sanitizeFileName(options.title || rawBaseName);
-    const targetFolder = topicFolder ? `${LIBRARY_DIR}/${topicFolder}` : LIBRARY_DIR;
+    const safeBase = sanitizeFileName(finalTitle || rawBaseName);
+    const targetFolder = (resolvedTopic && resolvedTopic !== 'Uncategorized')
+        ? `${LIBRARY_DIR}/${resolvedTopic}`
+        : LIBRARY_DIR;
     await ensureVaultFolder(app, targetFolder);
 
     const filePath = `${targetFolder}/${safeBase}.${ext}`;
     await writeVaultBinary(app, filePath, options.buffer);
 
     const defaultTags = [
+        docKind.toLowerCase(),
         subject.replace(/\s+/g, '-').replace(/[^a-z0-9-_]/gi, ''),
         ext
     ].filter(Boolean);
@@ -295,8 +606,9 @@ export async function saveAndIndexDocument(
     const indexMarkdown = buildIndexMarkdown({
         title: finalTitle,
         authors: finalAuthors,
+        docKind,
         subject,
-        topicFolder: topicFolder || 'Uncategorized',
+        topicFolder: resolvedTopic || 'Uncategorized',
         tags: allTags,
         type: ext.toUpperCase(),
         pages: totalPages,
@@ -313,10 +625,11 @@ export async function saveAndIndexDocument(
     return {
         filePath,
         indexPath,
+        docKind,
         title: finalTitle,
         authors: finalAuthors,
         subject,
-        topicFolder: topicFolder || 'Uncategorized',
+        topicFolder: resolvedTopic || 'Uncategorized',
         totalPages,
         totalChars: extractedText.length,
         abstractText,
@@ -329,6 +642,7 @@ export async function saveAndIndexDocument(
 export interface IndexMarkdownFields {
     title: string;
     authors: string;
+    docKind?: DocumentKind;
     subject: string;
     topicFolder: string;
     tags: string[];
@@ -343,13 +657,26 @@ export interface IndexMarkdownFields {
 }
 
 /**
- * Builds a clean, concise Library Index card (Metadata, Abstract, Section Titles, Summary, Conclusions, Tags)
+ * Builds a clean, concise Library Index card tailored to the document kind (Paper, Book, Document)
  * without dumping raw pages of text.
  */
 export function buildIndexMarkdown(fields: IndexMarkdownFields): string {
+    const docKind: DocumentKind = fields.docKind || 'Paper';
     const tagLines = fields.tags.length > 0
         ? fields.tags.map(t => `  - ${t.replace(/^#/, '').trim()}`).join('\n')
         : '  - research';
+
+    const sectionsHeading = docKind === 'Book'
+        ? '## Chapters & Table of Contents'
+        : docKind === 'Document'
+            ? '## Key Sections & Outline'
+            : '## Section Titles';
+
+    const abstractHeading = docKind === 'Book'
+        ? '## Book Overview'
+        : docKind === 'Document'
+            ? '## Overview'
+            : '## Abstract';
 
     const sectionsList = fields.sectionTitles && fields.sectionTitles.length > 0
         ? fields.sectionTitles.map(s => `- ${s}`).join('\n')
@@ -359,6 +686,7 @@ export function buildIndexMarkdown(fields: IndexMarkdownFields): string {
         '---',
         `title: "${fields.title.replace(/"/g, '\\"')}"`,
         `authors: "${fields.authors.replace(/"/g, '\\"')}"`,
+        `doc_kind: "${docKind}"`,
         `subject: "${fields.subject.toLowerCase()}"`,
         `topic_folder: "${fields.topicFolder.replace(/"/g, '\\"')}"`,
         'tags:',
@@ -372,6 +700,7 @@ export function buildIndexMarkdown(fields: IndexMarkdownFields): string {
         '',
         `# ${fields.title}`,
         '',
+        `- **Document Kind**: ${docKind}`,
         `- **Original File**: [[${fields.filePath}|${fields.filePath.split('/').pop()}]]`,
         `- **Topic Folder**: ${fields.topicFolder}`,
         `- **Subject**: ${fields.subject}`,
@@ -382,14 +711,14 @@ export function buildIndexMarkdown(fields: IndexMarkdownFields): string {
     ];
 
     if (fields.abstractText && fields.abstractText.trim()) {
-        blocks.push('## Abstract', fields.abstractText.trim(), '');
+        blocks.push(abstractHeading, fields.abstractText.trim(), '');
     }
 
     if (fields.summary && fields.summary.trim()) {
         blocks.push('## Summary & Key Takeaways', fields.summary.trim(), '');
     }
 
-    blocks.push('## Section Titles', sectionsList, '');
+    blocks.push(sectionsHeading, sectionsList, '');
 
     if (fields.conclusionsText && fields.conclusionsText.trim()) {
         blocks.push('## Conclusions', fields.conclusionsText.trim(), '');
@@ -450,6 +779,7 @@ export async function listFilesRecursive(app: App, folderPath: string): Promise<
 export interface LibraryDocumentEntry {
     title: string;
     authors: string;
+    docKind: DocumentKind;
     subject: string;
     topicFolder: string;
     type: string;
@@ -476,6 +806,7 @@ export async function listLibraryCatalog(app: App): Promise<LibraryDocumentEntry
             entriesMap.set(baseName.toLowerCase(), {
                 title: fm.title || baseName.replace(/_/g, ' '),
                 authors: fm.authors || 'Unknown',
+                docKind: (fm.doc_kind as DocumentKind) || 'Paper',
                 subject: fm.subject || 'general',
                 topicFolder: fm.topic_folder || 'Uncategorized',
                 type: fm.type || 'PDF',
@@ -511,6 +842,7 @@ export async function listLibraryCatalog(app: App): Promise<LibraryDocumentEntry
             entriesMap.set(key, {
                 title: baseName.replace(/_/g, ' '),
                 authors: 'Unknown',
+                docKind: 'Paper',
                 subject: topicFolder.toLowerCase(),
                 topicFolder,
                 type: ext,

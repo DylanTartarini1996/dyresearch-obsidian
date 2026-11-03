@@ -1,6 +1,11 @@
 import assert from 'node:assert';
 import { DyResearchEngine } from './src/engine/engine';
-import { saveAndIndexDocument, listLibraryCatalog } from './src/engine/pdf-service';
+import {
+    saveAndIndexDocument,
+    listLibraryCatalog,
+    normalizeAndDeduplicateAuthors,
+    resolveConsistentTopicFolder
+} from './src/engine/pdf-service';
 import { getLibrarianTools } from './src/engine/tools/library';
 import { getTeachingTools } from './src/engine/tools/teaching';
 
@@ -137,5 +142,21 @@ const mockPlugin = {
     const catalog = await listLibraryCatalog(mockApp);
     assert.strictEqual(catalog.length, 1);
     assert.strictEqual(catalog[0].topicFolder, 'Machine Learning');
-    console.log("All PDF download, Library organization, and Library Index reading checks passed!");
+    assert.strictEqual(catalog[0].docKind, 'Paper');
+
+    // Test author normalization & deduplication
+    const dedupedAuthors = normalizeAndDeduplicateAuthors(
+        'Vaswani, Ashish*; A. Vaswani; Shazeer, Noam; N. Shazeer',
+        ['Ashish Vaswani']
+    );
+    assert.strictEqual(dedupedAuthors, 'Ashish Vaswani, Noam Shazeer');
+
+    // Test consistent topic folder resolution
+    const matchedTopic = resolveConsistentTopicFolder('machine-learning', ['Machine Learning', 'Game Theory']);
+    assert.strictEqual(matchedTopic, 'Machine Learning');
+
+    const newTopic = resolveConsistentTopicFolder('reinforcement_learning', ['Machine Learning']);
+    assert.strictEqual(newTopic, 'Reinforcement Learning');
+
+    console.log("All PDF download, Library organization, author deduplication, and Library Index reading checks passed!");
 })();

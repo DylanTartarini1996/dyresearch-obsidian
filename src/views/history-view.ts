@@ -232,11 +232,18 @@ export class HistoryView extends ItemView {
 
     async renderUploadSection(container: HTMLElement) {
         const uploadContainer = container.createDiv({ cls: 'upload-section' });
-        uploadContainer.createEl("h4", { text: "Upload File(s) to Library" });
+        uploadContainer.createEl("h4", { text: "Upload & Auto-Index to Library" });
         const metadataForm = uploadContainer.createDiv({ cls: 'metadata-form' });
 
-        const subjectInput = metadataForm.createEl("input", { type: "text", placeholder: "Topic folder (e.g. Machine Learning)..." });
-        const authorsInput = metadataForm.createEl("input", { type: "text", placeholder: "Authors..." });
+        const docKindSelect = metadataForm.createEl("select", { cls: "dy-doc-kind-select" });
+        docKindSelect.createEl("option", { value: "Paper", text: "📄 Academic Paper" });
+        docKindSelect.createEl("option", { value: "Book", text: "📘 Book / Textbook" });
+        docKindSelect.createEl("option", { value: "Document", text: "📑 General Document" });
+
+        const topicHintInput = metadataForm.createEl("input", {
+            type: "text",
+            placeholder: "Topic hint (auto if empty)..."
+        });
 
         const fileInput = uploadContainer.createEl("input", {
             attr: { type: "file", multiple: "true", accept: ".pdf,.md,.docx,.txt" },
@@ -244,7 +251,7 @@ export class HistoryView extends ItemView {
         });
 
         const uploadBtn = uploadContainer.createEl("button", {
-            text: "📁 Select & Upload Docs",
+            text: "📁 Select & Index File(s)",
             cls: "dy-upload-btn"
         });
         uploadBtn.onClickEvent(() => fileInput.click());
@@ -257,17 +264,23 @@ export class HistoryView extends ItemView {
 
             try {
                 for (const file of Array.from(fileInput.files)) {
-                    await this.plugin.engine.ingestFile(file, {
-                        subject: subjectInput.value.trim(),
-                        authors: authorsInput.value.trim()
-                    });
+                    await this.plugin.engine.ingestFile(
+                        file,
+                        {
+                            docKind: docKindSelect.value as 'Paper' | 'Book' | 'Document',
+                            topicHint: topicHintInput.value.trim()
+                        },
+                        (statusText) => {
+                            uploadBtn.setText(statusText);
+                        }
+                    );
                 }
-                new Notice(`Files ingested successfully!`);
+                topicHintInput.value = "";
                 this.refreshView();
             } catch (err) {
                 new Notice("Upload failed.");
             } finally {
-                uploadBtn.setText("📁 Select & Upload Docs");
+                uploadBtn.setText("📁 Select & Index File(s)");
                 uploadBtn.disabled = false;
                 fileInput.value = "";
             }
@@ -293,6 +306,9 @@ export class HistoryView extends ItemView {
                     const header = card.createDiv({ cls: "library-card-header" });
                     const titleInfo = header.createDiv({ cls: "library-title-group" });
                     titleInfo.createEl("strong", { text: doc.title });
+                    if (doc.docKind) {
+                        titleInfo.createEl("span", { text: doc.docKind, cls: "badge-kind" });
+                    }
                     titleInfo.createEl("span", { text: doc.type, cls: "badge-type" });
 
                     const libDeleteBtn = header.createEl("button", {
