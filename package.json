@@ -1,7 +1,7 @@
 {
-  "name": "dyresearch-sidecar",
-  "version": "2.0.0",
-  "description": "Bridge to the DyResearch Agent system built with Google ADK.",
+  "name": "dyresearch",
+  "version": "2.0.1",
+  "description": "DyResearch Agent system built with Google ADK.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
