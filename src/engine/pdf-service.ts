@@ -417,7 +417,20 @@ export function parseAcademicStructure(rawText: string): {
     };
 }
 
-export async function extractPdfTextAndInfo(buffer: ArrayBuffer): Promise<ExtractedPdfData> {
+export interface ExtractPdfOptions {
+    /**
+     * Maximum front pages to scan during initial indexing (default: 35).
+     * For large books (> 45 pages), only the first `maxFrontPages` and last `maxBackPages`
+     * are scanned during upload so 1000-page books index in under a second.
+     */
+    maxFrontPages?: number;
+    maxBackPages?: number;
+}
+
+export async function extractPdfTextAndInfo(
+    buffer: ArrayBuffer,
+    options: ExtractPdfOptions = {}
+): Promise<ExtractedPdfData> {
     const pdfjsLib = await loadPdfJs();
     const loadingTask = pdfjsLib.getDocument(buffer.slice(0));
     const doc = await loadingTask.promise;
@@ -437,10 +450,45 @@ export async function extractPdfTextAndInfo(buffer: ArrayBuffer): Promise<Extrac
             // Ignore metadata errors if PDF only has raw pages
         }
 
-        const totalPages = doc.numPages || 0;
-        const pageTexts: string[] = [];
+        // Extract embedded PDF bookmarks / outline (instantaneous on textbooks & papers)
+        const outlineTitles: string[] = [];
+        try {
+            if (typeof doc.getOutline === 'function') {
+                const outline = await doc.getOutline();
+                const walkOutline = (items: any[], depth = 0) => {
+                    if (!Array.isArray(items) || depth > 1) return;
+                    for (const item of items) {
+                        const title = typeof item?.title === 'string' ? item.title.replace(/\s+/g, ' ').trim() : '';
+                        if (title && title.length >= 2 && title.length <= 110 && outlineTitles.length < 40) {
+                            outlineTitles.push(title);
+                        }
+                        if (Array.isArray(item?.items) && item.items.length > 0) {
+                            walkOutline(item.items, depth + 1);
+                        }
+                    }
+                };
+                walkOutline(outline);
+            }
+        } catch {
+            // Ignore if PDF does not have an embedded outline
+        }
 
-        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        const totalPages = doc.numPages || 0;
+        const maxFront = options.maxFrontPages ?? 35;
+        const maxBack = options.maxBackPages ?? 10;
+
+        const pagesToScan: number[] = [];
+        if (totalPages <= maxFront + maxBack) {
+            for (let p = 1; p <= totalPages; p++) pagesToScan.push(p);
+        } else {
+            for (let p = 1; p <= maxFront; p++) pagesToScan.push(p);
+            for (let p = Math.max(maxFront + 1, totalPages - maxBack + 1); p <= totalPages; p++) {
+                pagesToScan.push(p);
+            }
+        }
+
+        const pageTexts: string[] = [];
+        for (const pageNum of pagesToScan) {
             const page = await doc.getPage(pageNum);
             const textContent = await page.getTextContent();
             const items = textContent?.items || [];
@@ -458,6 +506,9 @@ export async function extractPdfTextAndInfo(buffer: ArrayBuffer): Promise<Extrac
 
         const fullText = pageTexts.join('\n\n').trim();
         const structure = parseAcademicStructure(fullText);
+        const mergedSections = outlineTitles.length > 0
+            ? Array.from(new Set([...outlineTitles, ...structure.sectionTitles])).slice(0, 45)
+            : structure.sectionTitles;
 
         return {
             text: fullText,
@@ -467,9 +518,82 @@ export async function extractPdfTextAndInfo(buffer: ArrayBuffer): Promise<Extrac
             inferredTitle: structure.inferredTitle,
             inferredAuthors: structure.inferredAuthors,
             abstractText: structure.abstractText,
-            sectionTitles: structure.sectionTitles,
+            sectionTitles: mergedSections,
             conclusionsText: structure.conclusionsText
         };
+    } finally {
+        if (typeof doc.destroy === 'function') {
+            await doc.destroy();
+        }
+    }
+}
+
+/**
+ * Targeted on-demand PDF reader for the Professor agent:
+ * - Reads a single page directly in O(1) without extracting the entire book, OR
+ * - Searches pages incrementally for `sectionQuery` and stops once matching passages are found.
+ */
+export async function queryPdfPagesOnDemand(
+    buffer: ArrayBuffer,
+    query: { page?: number; sectionQuery?: string }
+): Promise<string | null> {
+    const pdfjsLib = await loadPdfJs();
+    const loadingTask = pdfjsLib.getDocument(buffer.slice(0));
+    const doc = await loadingTask.promise;
+
+    const readSinglePageText = async (pageNum: number): Promise<string> => {
+        const page = await doc.getPage(pageNum);
+        try {
+            const textContent = await page.getTextContent();
+            const items = textContent?.items || [];
+            let pageStr = '';
+            for (const item of items) {
+                if ('str' in item) {
+                    pageStr += item.str + (item.hasEOL ? '\n' : ' ');
+                }
+            }
+            return pageStr.trim();
+        } finally {
+            if (typeof page.cleanup === 'function') {
+                page.cleanup();
+            }
+        }
+    };
+
+    try {
+        const totalPages = doc.numPages || 0;
+        if (totalPages === 0) return null;
+
+        if (typeof query.page === 'number' && query.page >= 1 && query.page <= totalPages) {
+            const pageText = await readSinglePageText(query.page);
+            return `### PDF Page ${query.page} of ${totalPages}:\n\n${pageText}`;
+        }
+
+        if (query.sectionQuery && query.sectionQuery.trim()) {
+            const q = query.sectionQuery.toLowerCase().trim();
+            const excerpts: string[] = [];
+
+            for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+                const pageText = await readSinglePageText(pageNum);
+                const lower = pageText.toLowerCase();
+                let pos = 0;
+                while (excerpts.length < 6) {
+                    const foundIdx = lower.indexOf(q, pos);
+                    if (foundIdx === -1) break;
+                    const start = Math.max(0, foundIdx - 300);
+                    const end = Math.min(pageText.length, foundIdx + 1000);
+                    excerpts.push(`[Page ${pageNum} of ${totalPages}]\n...\n${pageText.slice(start, end).trim()}\n...`);
+                    pos = foundIdx + q.length + 500;
+                }
+                if (excerpts.length >= 6) break;
+            }
+
+            if (excerpts.length > 0) {
+                return excerpts.join('\n\n---\n\n');
+            }
+        }
+
+        return null;
     } finally {
         if (typeof doc.destroy === 'function') {
             await doc.destroy();

@@ -741,7 +741,7 @@ function parseAcademicStructure(rawText) {
     inferredAuthors
   };
 }
-async function extractPdfTextAndInfo(buffer) {
+async function extractPdfTextAndInfo(buffer, options = {}) {
   const pdfjsLib = await (0, import_obsidian3.loadPdfJs)();
   const loadingTask = pdfjsLib.getDocument(buffer.slice(0));
   const doc = await loadingTask.promise;
@@ -758,9 +758,43 @@ async function extractPdfTextAndInfo(buffer) {
       }
     } catch {
     }
+    const outlineTitles = [];
+    try {
+      if (typeof doc.getOutline === "function") {
+        const outline = await doc.getOutline();
+        const walkOutline = (items, depth = 0) => {
+          if (!Array.isArray(items) || depth > 1)
+            return;
+          for (const item of items) {
+            const title = typeof item?.title === "string" ? item.title.replace(/\s+/g, " ").trim() : "";
+            if (title && title.length >= 2 && title.length <= 110 && outlineTitles.length < 40) {
+              outlineTitles.push(title);
+            }
+            if (Array.isArray(item?.items) && item.items.length > 0) {
+              walkOutline(item.items, depth + 1);
+            }
+          }
+        };
+        walkOutline(outline);
+      }
+    } catch {
+    }
     const totalPages = doc.numPages || 0;
+    const maxFront = options.maxFrontPages ?? 35;
+    const maxBack = options.maxBackPages ?? 10;
+    const pagesToScan = [];
+    if (totalPages <= maxFront + maxBack) {
+      for (let p = 1; p <= totalPages; p++)
+        pagesToScan.push(p);
+    } else {
+      for (let p = 1; p <= maxFront; p++)
+        pagesToScan.push(p);
+      for (let p = Math.max(maxFront + 1, totalPages - maxBack + 1); p <= totalPages; p++) {
+        pagesToScan.push(p);
+      }
+    }
     const pageTexts = [];
-    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    for (const pageNum of pagesToScan) {
       const page = await doc.getPage(pageNum);
       const textContent = await page.getTextContent();
       const items = textContent?.items || [];
@@ -778,6 +812,7 @@ async function extractPdfTextAndInfo(buffer) {
     }
     const fullText = pageTexts.join("\n\n").trim();
     const structure = parseAcademicStructure(fullText);
+    const mergedSections = outlineTitles.length > 0 ? Array.from(/* @__PURE__ */ new Set([...outlineTitles, ...structure.sectionTitles])).slice(0, 45) : structure.sectionTitles;
     return {
       text: fullText,
       totalPages,
@@ -786,9 +821,74 @@ async function extractPdfTextAndInfo(buffer) {
       inferredTitle: structure.inferredTitle,
       inferredAuthors: structure.inferredAuthors,
       abstractText: structure.abstractText,
-      sectionTitles: structure.sectionTitles,
+      sectionTitles: mergedSections,
       conclusionsText: structure.conclusionsText
     };
+  } finally {
+    if (typeof doc.destroy === "function") {
+      await doc.destroy();
+    }
+  }
+}
+async function queryPdfPagesOnDemand(buffer, query) {
+  const pdfjsLib = await (0, import_obsidian3.loadPdfJs)();
+  const loadingTask = pdfjsLib.getDocument(buffer.slice(0));
+  const doc = await loadingTask.promise;
+  const readSinglePageText = async (pageNum) => {
+    const page = await doc.getPage(pageNum);
+    try {
+      const textContent = await page.getTextContent();
+      const items = textContent?.items || [];
+      let pageStr = "";
+      for (const item of items) {
+        if ("str" in item) {
+          pageStr += item.str + (item.hasEOL ? "\n" : " ");
+        }
+      }
+      return pageStr.trim();
+    } finally {
+      if (typeof page.cleanup === "function") {
+        page.cleanup();
+      }
+    }
+  };
+  try {
+    const totalPages = doc.numPages || 0;
+    if (totalPages === 0)
+      return null;
+    if (typeof query.page === "number" && query.page >= 1 && query.page <= totalPages) {
+      const pageText = await readSinglePageText(query.page);
+      return `### PDF Page ${query.page} of ${totalPages}:
+
+${pageText}`;
+    }
+    if (query.sectionQuery && query.sectionQuery.trim()) {
+      const q7 = query.sectionQuery.toLowerCase().trim();
+      const excerpts = [];
+      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        const pageText = await readSinglePageText(pageNum);
+        const lower = pageText.toLowerCase();
+        let pos = 0;
+        while (excerpts.length < 6) {
+          const foundIdx = lower.indexOf(q7, pos);
+          if (foundIdx === -1)
+            break;
+          const start = Math.max(0, foundIdx - 300);
+          const end = Math.min(pageText.length, foundIdx + 1e3);
+          excerpts.push(`[Page ${pageNum} of ${totalPages}]
+...
+${pageText.slice(start, end).trim()}
+...`);
+          pos = foundIdx + q7.length + 500;
+        }
+        if (excerpts.length >= 6)
+          break;
+      }
+      if (excerpts.length > 0) {
+        return excerpts.join("\n\n---\n\n");
+      }
+    }
+    return null;
   } finally {
     if (typeof doc.destroy === "function") {
       await doc.destroy();
@@ -33324,56 +33424,18 @@ function getTeachingTools(app) {
         if ((args.page || args.section_query) && pdfPath && pdfPath.toLowerCase().endsWith(".pdf") && await app.vault.adapter.exists(pdfPath)) {
           try {
             const pdfBuffer = await app.vault.adapter.readBinary(pdfPath);
-            const pdfData = await extractPdfTextAndInfo(pdfBuffer);
-            const fullPdfText = pdfData.text;
-            if (args.page && typeof args.page === "number") {
-              const pageNum = args.page;
-              const pageMarkerRegex = new RegExp(`([\\s\\S]*?)\\n-- ${pageNum} of \\d+ --`, "i");
-              const prevPageMarker = pageNum > 1 ? new RegExp(`-- ${pageNum - 1} of \\d+ --\\n([\\s\\S]*?)\\n-- ${pageNum} of \\d+ --`, "i") : null;
-              if (prevPageMarker) {
-                const m7 = fullPdfText.match(prevPageMarker);
-                if (m7)
-                  return `${indexContent}
+            const matchedText = await queryPdfPagesOnDemand(pdfBuffer, {
+              page: typeof args.page === "number" ? args.page : void 0,
+              sectionQuery: typeof args.section_query === "string" ? args.section_query : void 0
+            });
+            if (matchedText) {
+              const header = args.page ? `### PDF Page ${args.page} (${pdfPath}):` : `### PDF Passages matching "${args.section_query}" (${pdfPath}):`;
+              return `${indexContent}
 
 ---
-### PDF Page ${pageNum} (${pdfPath}):
+${header}
 
-${m7[1].trim()}`;
-              } else {
-                const m7 = fullPdfText.match(pageMarkerRegex);
-                if (m7)
-                  return `${indexContent}
-
----
-### PDF Page ${pageNum} (${pdfPath}):
-
-${m7[1].trim()}`;
-              }
-            }
-            if (args.section_query && typeof args.section_query === "string") {
-              const q7 = args.section_query.toLowerCase().trim();
-              const lower = fullPdfText.toLowerCase();
-              const excerpts = [];
-              let pos = 0;
-              while (excerpts.length < 6) {
-                const foundIdx = lower.indexOf(q7, pos);
-                if (foundIdx === -1)
-                  break;
-                const start = Math.max(0, foundIdx - 300);
-                const end = Math.min(fullPdfText.length, foundIdx + 1e3);
-                excerpts.push(`...
-${fullPdfText.slice(start, end).trim()}
-...`);
-                pos = foundIdx + q7.length + 500;
-              }
-              if (excerpts.length > 0) {
-                return `${indexContent}
-
----
-### PDF Passages matching "${args.section_query}" (${pdfPath}):
-
-${excerpts.join("\n\n---\n\n")}`;
-              }
+${matchedText}`;
             }
           } catch (e) {
             console.error("Failed to read PDF on the fly:", e);
@@ -33926,11 +33988,6 @@ var DyResearchEngine = class {
     return await this.sessionService.renameSession(oldSessionId, newSessionId);
   }
   async ingestFile(file, metadata, onProgress) {
-    const MAX_SIZE = 25 * 1024 * 1024;
-    if (file.size > MAX_SIZE) {
-      new import_obsidian6.Notice(`File ${file.name} exceeds the 25MB limit.`);
-      return;
-    }
     const docKind = metadata?.docKind || "Paper";
     const topicHint = metadata?.topicHint?.trim() || "";
     onProgress?.(`\u{1F4C4} Extracting ${file.name}...`);

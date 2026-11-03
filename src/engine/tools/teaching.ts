@@ -6,7 +6,7 @@ import {
     listFilesRecursive,
     parseFrontmatter,
     sanitizeFileName,
-    extractPdfTextAndInfo,
+    queryPdfPagesOnDemand,
     areAuthorsEquivalent,
     cleanSingleAuthorName
 } from '../pdf-service';
@@ -184,43 +184,19 @@ export function getTeachingTools(app: App) {
                 const fm = parseFrontmatter(indexContent);
                 const pdfPath = fm.file_path || '';
 
-                // If page or section_query is requested, extract from the linked PDF on the fly
+                // If page or section_query is requested, extract targeted page(s) from the linked PDF on demand
                 if ((args.page || args.section_query) && pdfPath && pdfPath.toLowerCase().endsWith('.pdf') && await app.vault.adapter.exists(pdfPath)) {
                     try {
                         const pdfBuffer = await app.vault.adapter.readBinary(pdfPath);
-                        const pdfData = await extractPdfTextAndInfo(pdfBuffer);
-                        const fullPdfText = pdfData.text;
-
-                        if (args.page && typeof args.page === 'number') {
-                            const pageNum = args.page;
-                            const pageMarkerRegex = new RegExp(`([\\s\\S]*?)\\n-- ${pageNum} of \\d+ --`, 'i');
-                            const prevPageMarker = pageNum > 1 ? new RegExp(`-- ${pageNum - 1} of \\d+ --\\n([\\s\\S]*?)\\n-- ${pageNum} of \\d+ --`, 'i') : null;
-
-                            if (prevPageMarker) {
-                                const m = fullPdfText.match(prevPageMarker);
-                                if (m) return `${indexContent}\n\n---\n### PDF Page ${pageNum} (${pdfPath}):\n\n${m[1].trim()}`;
-                            } else {
-                                const m = fullPdfText.match(pageMarkerRegex);
-                                if (m) return `${indexContent}\n\n---\n### PDF Page ${pageNum} (${pdfPath}):\n\n${m[1].trim()}`;
-                            }
-                        }
-
-                        if (args.section_query && typeof args.section_query === 'string') {
-                            const q = args.section_query.toLowerCase().trim();
-                            const lower = fullPdfText.toLowerCase();
-                            const excerpts: string[] = [];
-                            let pos = 0;
-                            while (excerpts.length < 6) {
-                                const foundIdx = lower.indexOf(q, pos);
-                                if (foundIdx === -1) break;
-                                const start = Math.max(0, foundIdx - 300);
-                                const end = Math.min(fullPdfText.length, foundIdx + 1000);
-                                excerpts.push(`...\n${fullPdfText.slice(start, end).trim()}\n...`);
-                                pos = foundIdx + q.length + 500;
-                            }
-                            if (excerpts.length > 0) {
-                                return `${indexContent}\n\n---\n### PDF Passages matching "${args.section_query}" (${pdfPath}):\n\n${excerpts.join('\n\n---\n\n')}`;
-                            }
+                        const matchedText = await queryPdfPagesOnDemand(pdfBuffer, {
+                            page: typeof args.page === 'number' ? args.page : undefined,
+                            sectionQuery: typeof args.section_query === 'string' ? args.section_query : undefined
+                        });
+                        if (matchedText) {
+                            const header = args.page
+                                ? `### PDF Page ${args.page} (${pdfPath}):`
+                                : `### PDF Passages matching "${args.section_query}" (${pdfPath}):`;
+                            return `${indexContent}\n\n---\n${header}\n\n${matchedText}`;
                         }
                     } catch (e) {
                         console.error("Failed to read PDF on the fly:", e);

@@ -121,13 +121,6 @@ export class DyResearchEngine {
         metadata: { docKind?: DocumentKind; topicHint?: string },
         onProgress?: (status: string) => void
     ) {
-        // Enforce max size limit (25MB for research PDFs/books)
-        const MAX_SIZE = 25 * 1024 * 1024;
-        if (file.size > MAX_SIZE) {
-            new Notice(`File ${file.name} exceeds the 25MB limit.`);
-            return;
-        }
-
         const docKind: DocumentKind = metadata?.docKind || 'Paper';
         const topicHint = metadata?.topicHint?.trim() || '';
 
