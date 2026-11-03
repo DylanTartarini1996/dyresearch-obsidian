@@ -1,15 +1,19 @@
-name: Build DyResearch Plugin
+name: Build & Release DyResearch Plugin
 
 on:
   push:
     branches:
       - 'main'
+    tags:
+      - '*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  # --- BUILD THE OBSIDIAN PLUGIN ---
-  build-plugin:
-    name: Build Obsidian Plugin
+  build-and-release:
+    name: Build & Release Obsidian Plugin
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -26,9 +30,9 @@ jobs:
         run: npm install
 
       - name: Build Plugin
-        run: npm run build # This creates main.js
+        run: npm run build # Generates main.js
 
-      - name: Upload Plugin Artifacts
+      - name: Upload Build Artifacts (Actions)
         uses: actions/upload-artifact@v4
         with:
           name: dyresearch
@@ -36,3 +40,14 @@ jobs:
             main.js
             manifest.json
             styles.css
+
+      - name: Publish to GitHub Release Assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            main.js
+            manifest.json
+            styles.css
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
