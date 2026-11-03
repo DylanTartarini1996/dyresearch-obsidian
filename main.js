@@ -31971,12 +31971,13 @@ function resolveConsistentTopicFolder(candidateTopic, existingFolders) {
   }
   return cleaned.split(" ").map((w) => w.length > 2 || w === cleaned.split(" ")[0] ? w.charAt(0).toUpperCase() + w.slice(1) : w.toLowerCase()).join(" ");
 }
-var INSTITUTION_OR_NOISE_REGEX = /\b(university|institute|department|laboratory|research|google|microsoft|facebook|meta|openai|deepmind|college|school|hospital|inc\.|corp\.|ltd\.|abstract|introduction|contents|chapter|preface|copyright|isbn|arxiv|proceedings|conference|journal|volume|permission|reproduce|attribution|hereby|grants|equal contribution)\b/i;
+var HEADER_BOILERPLATE_REGEX = /\b(copyright|isbn|issn|doi:|arxiv:|proceedings of|permission to|reproduce|attribution|hereby grants|all rights reserved|preprint|submitted to|published in|vol\.|volume \d+|issue \d+)\b/i;
+var AFFILIATION_OR_NON_PERSON_REGEX = /\b(university|universit[aàäéèê]|institut[eo]?|department|faculty|center|centre|laboratory|labs?|research|foundation|academy|college|school|hospital|clinic|ministry|agency|association|society|corporation|inc\.|corp\.|ltd\.|llc|gmbh|group|division|team|abstract|introduction|contents|chapter|preface|copyright|isbn|issn|doi|arxiv|proceedings|conference|symposium|workshop|transactions|journal|volume|issue|preprint|submitted|published|permission|reproduce|attribution|hereby|grants|equal contribution)\b/i;
 function inferTitleAndAuthorsFromHeader(rawText) {
   const firstPage = rawText.split(/-- 1 of \d+ --/)[0] || rawText.slice(0, 3e3);
   const beforeAbstract = firstPage.split(/(?:^|\n)\s*(?:Abstract|1\.?\s+Introduction|Contents|Table of Contents)\b/i)[0] || firstPage.slice(0, 1500);
   const lines = beforeAbstract.split("\n").map((l) => l.trim()).filter((l) => l.length > 2 && !/@/.test(l) && !/^https?:\/\//i.test(l));
-  const cleanLines = lines.filter((l) => !INSTITUTION_OR_NOISE_REGEX.test(l));
+  const cleanLines = lines.filter((l) => !HEADER_BOILERPLATE_REGEX.test(l));
   let inferredTitle;
   let titleIdx = -1;
   for (let i = 0; i < Math.min(cleanLines.length, 6); i++) {
@@ -31991,14 +31992,14 @@ function inferTitleAndAuthorsFromHeader(rawText) {
   const startIdx = titleIdx !== -1 ? titleIdx + 1 : 1;
   for (let i = startIdx; i < lines.length; i++) {
     const line = lines[i];
-    if (INSTITUTION_OR_NOISE_REGEX.test(line))
+    if (AFFILIATION_OR_NON_PERSON_REGEX.test(line))
       continue;
     if (/@/.test(line))
       continue;
     const segments = line.replace(/\band\b/gi, ",").split(/[,;]+/).map(cleanSingleAuthorName).filter(Boolean);
     for (const seg of segments) {
       const words = seg.split(/\s+/);
-      if (words.length >= 2 && words.length <= 4 && words.every((w) => /^[A-ZŁŚŻŹĆŃÓÁÉÍÓÚÄÖÜ][a-zA-Z0-9.\-łśżźćńóáéíóúäöü']*$/.test(w)) && !INSTITUTION_OR_NOISE_REGEX.test(seg)) {
+      if (words.length >= 2 && words.length <= 4 && words.every((w) => /^[A-ZŁŚŻŹĆŃÓÁÉÍÓÚÄÖÜ][a-zA-Z0-9.\-łśżźćńóáéíóúäöü']*$/.test(w)) && !AFFILIATION_OR_NON_PERSON_REGEX.test(seg)) {
         authorCandidates.push(seg);
       }
     }
@@ -32013,7 +32014,7 @@ function parseAcademicStructure(rawText) {
   let abstractText = "";
   const absMatch = cleanText.match(/(?:^|\n)\s*(?:Abstract|Executive Summary|Overview|Preface)\s*\n([\s\S]{80,2500}?)(?=\n\s*(?:1\.?\s+Introduction|I\.?\s+Introduction|Chapter\s+1|Keywords|Index Terms|-- 1 of|\n\n\d+\s+[A-Z]))/i);
   if (absMatch) {
-    abstractText = absMatch[1].split("\n").filter((line) => !/^[∗†‡]\s*(Equal contribution|Work performed)/i.test(line.trim())).filter((line) => !/Conference on Neural Information Processing|arXiv:/i.test(line.trim())).join(" ").replace(/\s+/g, " ").trim();
+    abstractText = absMatch[1].split("\n").filter((line) => !/^[∗†‡§]\s*(Equal contribution|Work performed|Corresponding author)/i.test(line.trim())).filter((line) => !/\b(Proceedings of|Conference on|Symposium on|Transactions on|arXiv:|DOI:)\b/i.test(line.trim())).join(" ").replace(/\s+/g, " ").trim();
   }
   const sectionTitles = [];
   const seenSections = /* @__PURE__ */ new Set();

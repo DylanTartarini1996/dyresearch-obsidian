@@ -254,7 +254,9 @@ export interface ExtractedPdfData {
     conclusionsText: string;
 }
 
-const INSTITUTION_OR_NOISE_REGEX = /\b(university|institute|department|laboratory|research|google|microsoft|facebook|meta|openai|deepmind|college|school|hospital|inc\.|corp\.|ltd\.|abstract|introduction|contents|chapter|preface|copyright|isbn|arxiv|proceedings|conference|journal|volume|permission|reproduce|attribution|hereby|grants|equal contribution)\b/i;
+const HEADER_BOILERPLATE_REGEX = /\b(copyright|isbn|issn|doi:|arxiv:|proceedings of|permission to|reproduce|attribution|hereby grants|all rights reserved|preprint|submitted to|published in|vol\.|volume \d+|issue \d+)\b/i;
+
+const AFFILIATION_OR_NON_PERSON_REGEX = /\b(university|universit[aàäéèê]|institut[eo]?|department|faculty|center|centre|laboratory|labs?|research|foundation|academy|college|school|hospital|clinic|ministry|agency|association|society|corporation|inc\.|corp\.|ltd\.|llc|gmbh|group|division|team|abstract|introduction|contents|chapter|preface|copyright|isbn|issn|doi|arxiv|proceedings|conference|symposium|workshop|transactions|journal|volume|issue|preprint|submitted|published|permission|reproduce|attribution|hereby|grants|equal contribution)\b/i;
 
 /**
  * Heuristically infers title and author names from the first page header block (before Abstract/Introduction).
@@ -271,8 +273,8 @@ export function inferTitleAndAuthorsFromHeader(rawText: string): {
         .map(l => l.trim())
         .filter(l => l.length > 2 && !/@/.test(l) && !/^https?:\/\//i.test(l));
 
-    // Filter out top boilerplate/permission lines
-    const cleanLines = lines.filter(l => !INSTITUTION_OR_NOISE_REGEX.test(l));
+    // Filter out top boilerplate/permission lines when looking for the document title
+    const cleanLines = lines.filter(l => !HEADER_BOILERPLATE_REGEX.test(l));
 
     let inferredTitle: string | undefined;
     let titleIdx = -1;
@@ -290,7 +292,7 @@ export function inferTitleAndAuthorsFromHeader(rawText: string): {
     const startIdx = titleIdx !== -1 ? titleIdx + 1 : 1;
     for (let i = startIdx; i < lines.length; i++) {
         const line = lines[i];
-        if (INSTITUTION_OR_NOISE_REGEX.test(line)) continue;
+        if (AFFILIATION_OR_NON_PERSON_REGEX.test(line)) continue;
         if (/@/.test(line)) continue;
 
         // Split line if multiple authors are separated by commas or "and"
@@ -306,7 +308,7 @@ export function inferTitleAndAuthorsFromHeader(rawText: string): {
                 words.length >= 2 &&
                 words.length <= 4 &&
                 words.every(w => /^[A-ZŁŚŻŹĆŃÓÁÉÍÓÚÄÖÜ][a-zA-Z0-9.\-łśżźćńóáéíóúäöü']*$/.test(w)) &&
-                !INSTITUTION_OR_NOISE_REGEX.test(seg)
+                !AFFILIATION_OR_NON_PERSON_REGEX.test(seg)
             ) {
                 authorCandidates.push(seg);
             }
@@ -337,8 +339,8 @@ export function parseAcademicStructure(rawText: string): {
     if (absMatch) {
         abstractText = absMatch[1]
             .split('\n')
-            .filter(line => !/^[∗†‡]\s*(Equal contribution|Work performed)/i.test(line.trim()))
-            .filter(line => !/Conference on Neural Information Processing|arXiv:/i.test(line.trim()))
+            .filter(line => !/^[∗†‡§]\s*(Equal contribution|Work performed|Corresponding author)/i.test(line.trim()))
+            .filter(line => !/\b(Proceedings of|Conference on|Symposium on|Transactions on|arXiv:|DOI:)\b/i.test(line.trim()))
             .join(' ')
             .replace(/\s+/g, ' ')
             .trim();
