@@ -30,6 +30,13 @@ export class HistoryView extends ItemView {
         this.refreshView();
     }
 
+    public updateActiveChatBadge(newSessionId: string) {
+        const badgeText = this.containerEl.querySelector('.chat-session-id-text');
+        if (badgeText) {
+            badgeText.textContent = newSessionId;
+        }
+    }
+
     async onOpen() {
         if (this.plugin.activeChatModal) {
             this.activeTab = 'chats';
@@ -97,136 +104,179 @@ export class HistoryView extends ItemView {
         const searchContainer = container.createDiv({ cls: 'history-search-container' });
         const searchInput = searchContainer.createEl("input", {
             type: "text",
-            placeholder: "Search sessions...",
+            placeholder: "🔍 Search sessions by name or message...",
             value: this.searchQuery,
             cls: "history-search-input"
         });
 
-        searchInput.addEventListener('keydown', (e: KeyboardEvent) => {
-            if (e.key === 'Enter') {
-                this.searchQuery = searchInput.value.trim();
-                list.empty();
-                loadChats();
+        const list = container.createDiv({ cls: "history-list" });
+        let allSessions: any[] = [];
+
+        const renderFilteredSessions = () => {
+            list.empty();
+            const query = this.searchQuery.trim().toLowerCase();
+
+            const sessions = query
+                ? allSessions.filter((s) => {
+                    if (s.sessionId.toLowerCase().includes(query)) return true;
+                    const eventText = (s.events || [])
+                        .map((e: any) => {
+                            const parts = e.content?.parts || e.newMessage?.parts || e.modelResponse?.parts || [];
+                            return parts.map((p: any) => p.text || '').join(' ');
+                        })
+                        .join(' ')
+                        .toLowerCase();
+                    return eventText.includes(query);
+                })
+                : allSessions;
+
+            if (sessions.length === 0) {
+                list.createEl("p", { text: "No sessions found.", cls: "dy-empty-list-text" });
+                return;
             }
-        });
+
+            sessions.forEach((item) => {
+                const sessionEl = list.createDiv({ cls: "history-item" });
+                if (item.sessionId === this.plugin.currentSessionId) sessionEl.addClass('is-active');
+
+                const titleContainer = sessionEl.createDiv({ cls: "session-title-container" });
+                const nameEl = titleContainer.createEl("div", {
+                    text: item.sessionId,
+                    cls: "session-name",
+                    attr: { title: "Click to open chat • Double-click or click ✏️ to rename" }
+                });
+
+                const actionsGroup = titleContainer.createDiv({ cls: "session-item-actions" });
+
+                const openMdBtn = actionsGroup.createEl("button", {
+                    cls: "dy-edit-btn",
+                    attr: { 'aria-label': 'Open session Markdown note' }
+                });
+                setIcon(openMdBtn, 'file-text');
+
+                const editBtn = actionsGroup.createEl("button", {
+                    cls: "dy-edit-btn",
+                    attr: { 'aria-label': 'Rename session' }
+                });
+                setIcon(editBtn, 'pencil');
+
+                const deleteBtn = actionsGroup.createEl("button", {
+                    cls: "dy-delete-btn",
+                    attr: { 'aria-label': 'Delete session' }
+                });
+                setIcon(deleteBtn, 'trash');
+
+                const msgCount = (item.events || []).filter((e: any) => {
+                    const parts = e.content?.parts || e.newMessage?.parts || e.modelResponse?.parts || [];
+                    return parts.some((p: any) => p?.text && !p?.thought);
+                }).length;
+                const date = new Date(item.updatedAt!).toLocaleDateString();
+                sessionEl.createEl("small", {
+                    text: `Last activity: ${date} • 💬 ${msgCount} msg${msgCount === 1 ? '' : 's'}`,
+                    cls: "session-date"
+                });
+
+                sessionEl.onClickEvent(async (e) => {
+                    if ((e.target as HTMLElement).tagName === 'INPUT') return;
+                    this.plugin.currentSessionId = item.sessionId;
+                    if (this.plugin.activeChatModal) {
+                        await this.plugin.activeChatModal.switchSession(item.sessionId);
+                        await this.refreshView();
+                    } else {
+                        this.activeTab = 'chat';
+                        await this.refreshView();
+                    }
+                });
+
+                openMdBtn.onClickEvent(async (e) => {
+                    e.stopPropagation();
+                    await this.app.workspace.openLinkText(`DyResearch/Sessions/${item.sessionId}.md`, '', false);
+                });
+
+                const beginSessionRename = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    if (nameEl.querySelector('input')) return;
+                    nameEl.empty();
+                    const inputField = nameEl.createEl("input", {
+                        type: "text",
+                        value: item.sessionId,
+                        cls: "session-rename-input"
+                    });
+                    editBtn.style.display = 'none';
+                    inputField.focus();
+                    inputField.select();
+
+                    let committed = false;
+                    const commitRename = async (save: boolean) => {
+                        if (committed) return;
+                        committed = true;
+                        const newId = inputField.value.trim();
+                        if (!save || !newId || newId === item.sessionId) {
+                            nameEl.setText(item.sessionId);
+                            editBtn.style.display = 'flex';
+                            return;
+                        }
+                        inputField.disabled = true;
+                        try {
+                            const finalId = await this.plugin.renameSession(item.sessionId, newId);
+                            new Notice(`Session renamed to "${finalId}".`);
+                        } catch (err: any) {
+                            nameEl.setText(item.sessionId);
+                            editBtn.style.display = 'flex';
+                            new Notice(err?.message || "Failed to rename session.");
+                        }
+                    };
+
+                    inputField.addEventListener('keydown', async (keyEvent: KeyboardEvent) => {
+                        if (keyEvent.key === 'Enter') {
+                            keyEvent.preventDefault();
+                            await commitRename(true);
+                        } else if (keyEvent.key === 'Escape') {
+                            keyEvent.preventDefault();
+                            await commitRename(false);
+                        }
+                    });
+
+                    inputField.addEventListener('blur', async () => {
+                        await commitRename(true);
+                    });
+                };
+
+                editBtn.onClickEvent(beginSessionRename);
+                nameEl.addEventListener('dblclick', beginSessionRename);
+
+                deleteBtn.onClickEvent(async (e) => {
+                    e.stopPropagation();
+                    if (!confirm(`Are you sure you want to delete session "${item.sessionId}"?`)) return;
+                    try {
+                        await this.plugin.engine.sessionService.deleteSession({
+                            appName: 'dyresearch',
+                            sessionId: item.sessionId
+                        });
+                        if (this.plugin.currentSessionId === item.sessionId) {
+                            this.plugin.currentSessionId = `obsidian_${Date.now()}`;
+                        }
+                        this.refreshView();
+                        new Notice("Session deleted.");
+                    } catch (err) {
+                        new Notice("Failed to delete session.");
+                    }
+                });
+            });
+        };
 
         searchInput.addEventListener('input', () => {
-            if (searchInput.value.trim() === "" && this.searchQuery !== "") {
-                this.searchQuery = "";
-                list.empty();
-                loadChats();
-            }
+            this.searchQuery = searchInput.value;
+            renderFilteredSessions();
         });
-
-        const list = container.createDiv({ cls: "history-list" });
 
         const loadChats = async () => {
             const loadingText = list.createEl("p", { text: "Loading sessions...", cls: "loading-text" });
             try {
                 const response = await this.plugin.engine.getSessions();
                 loadingText.remove();
-
-                let sessions = response.sessions;
-                if (this.searchQuery) {
-                    sessions = sessions.filter(s => s.sessionId.toLowerCase().includes(this.searchQuery.toLowerCase()));
-                }
-
-                if (sessions.length === 0) {
-                    list.createEl("p", { text: "No sessions found.", cls: "dy-empty-list-text" });
-                    return;
-                }
-
-                sessions.forEach((item) => {
-                    const sessionEl = list.createDiv({ cls: "history-item" });
-                    if (item.sessionId === this.plugin.currentSessionId) sessionEl.addClass('is-active');
-
-                    const titleContainer = sessionEl.createDiv({ cls: "session-title-container" });
-                    const nameEl = titleContainer.createEl("div", { text: item.sessionId, cls: "session-name" });
-
-                    const actionsGroup = titleContainer.createDiv({ cls: "session-item-actions" });
-                    const editBtn = actionsGroup.createEl("button", {
-                        cls: "dy-edit-btn",
-                        attr: { 'aria-label': 'Rename session' }
-                    });
-                    setIcon(editBtn, 'pencil');
-
-                    const deleteBtn = actionsGroup.createEl("button", {
-                        cls: "dy-delete-btn",
-                        attr: { 'aria-label': 'Delete session' }
-                    });
-                    setIcon(deleteBtn, 'trash');
-
-                    const date = new Date(item.updatedAt!).toLocaleDateString();
-                    sessionEl.createEl("small", { text: `Last activity: ${date}`, cls: "session-date" });
-
-                    sessionEl.onClickEvent(async (e) => {
-                        if ((e.target as HTMLElement).tagName === 'INPUT') return;
-                        this.plugin.currentSessionId = item.sessionId;
-                        if (this.plugin.activeChatModal) {
-                            await this.plugin.activeChatModal.switchSession(item.sessionId);
-                            await this.refreshView();
-                        } else {
-                            this.activeTab = 'chat';
-                            await this.refreshView();
-                        }
-                    });
-
-                    editBtn.onClickEvent((e) => {
-                        e.stopPropagation();
-                        nameEl.empty();
-                        const inputField = nameEl.createEl("input", {
-                            type: "text",
-                            value: item.sessionId,
-                            cls: "session-rename-input"
-                        });
-                        editBtn.style.display = 'none';
-                        inputField.focus();
-
-                        inputField.addEventListener('keydown', async (keyEvent: KeyboardEvent) => {
-                            if (keyEvent.key === 'Enter') {
-                                const newId = inputField.value.trim();
-                                if (!newId || newId === item.sessionId) {
-                                    nameEl.setText(item.sessionId);
-                                    editBtn.style.display = 'flex';
-                                    return;
-                                }
-                                inputField.disabled = true;
-                                try {
-                                    await this.plugin.engine.renameSession(item.sessionId, newId);
-                                    if (this.plugin.currentSessionId === item.sessionId) {
-                                        this.plugin.currentSessionId = newId;
-                                    }
-                                    this.refreshView();
-                                    new Notice("Session renamed successfully.");
-                                } catch (err) {
-                                    nameEl.setText(item.sessionId);
-                                    editBtn.style.display = 'flex';
-                                }
-                            } else if (keyEvent.key === 'Escape') {
-                                nameEl.setText(item.sessionId);
-                                editBtn.style.display = 'flex';
-                            }
-                        });
-                    });
-
-                    deleteBtn.onClickEvent(async (e) => {
-                        e.stopPropagation();
-                        if (!confirm(`Are you sure you want to delete session "${item.sessionId}"?`)) return;
-                        try {
-                            await this.plugin.engine.sessionService.deleteSession({
-                                appName: 'dyresearch',
-                                sessionId: item.sessionId
-                            });
-                            if (this.plugin.currentSessionId === item.sessionId) {
-                                this.plugin.currentSessionId = `obsidian_${Date.now()}`;
-                            }
-                            this.refreshView();
-                            new Notice("Session deleted.");
-                        } catch (err) {
-                            new Notice("Failed to delete session.");
-                        }
-                    });
-                });
+                allSessions = response.sessions;
+                renderFilteredSessions();
             } catch (err) {
                 loadingText.setText("Failed to load history.");
             }

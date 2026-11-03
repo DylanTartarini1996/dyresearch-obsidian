@@ -143,6 +143,43 @@
     text-overflow: ellipsis;
     color: var(--text-normal);
     font-weight: 500;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 2px 4px;
+    transition: background-color 0.15s ease;
+}
+
+.chat-session-id-text:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.chat-rename-inline-btn {
+    width: 22px;
+    height: 22px;
+    padding: 3px;
+    border-radius: 4px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    opacity: 0.65;
+    box-shadow: none;
+}
+
+.chat-rename-inline-btn:hover {
+    opacity: 1;
+    color: var(--text-normal);
+    background-color: var(--background-modifier-hover);
+}
+
+.chat-header-rename-input {
+    min-width: 140px;
+    max-width: 240px;
+    font-family: var(--font-interface);
 }
 
 .chat-session-actions {

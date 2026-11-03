@@ -1,4 +1,4 @@
-import { App, Modal, MarkdownRenderer, setIcon } from 'obsidian';
+import { App, Modal, MarkdownRenderer, setIcon, Notice } from 'obsidian';
 import type DyResearchPlugin from '../main';
 
 export interface ChatInterfaceOptions {
@@ -17,14 +17,98 @@ export async function renderChatInterface(
 ) {
     container.empty();
 
+    let activeSessionId = plugin.engine.sessionService.resolveSessionId(sessionId);
+    plugin.currentSessionId = activeSessionId;
+
     // Session info & action bar
     const sessionBar = container.createDiv({ cls: 'chat-session-bar' });
     const sessionBadge = sessionBar.createDiv({ cls: 'chat-session-badge' });
     const badgeIcon = sessionBadge.createSpan({ cls: 'chat-session-badge-icon' });
     setIcon(badgeIcon, 'message-square');
-    sessionBadge.createSpan({ text: sessionId, cls: 'chat-session-id-text' });
+    const sessionIdTextEl = sessionBadge.createSpan({
+        text: activeSessionId,
+        cls: 'chat-session-id-text',
+        attr: { title: 'Click to rename session' }
+    });
+
+    const renameSessionBtn = sessionBadge.createEl('button', {
+        cls: 'clickable-icon chat-rename-inline-btn',
+        attr: { 'aria-label': 'Rename session' }
+    });
+    setIcon(renameSessionBtn, 'pencil');
+
+    const startInlineRename = (e: MouseEvent) => {
+        e.stopPropagation();
+        if (sessionBadge.querySelector('input')) return;
+
+        const currentName = plugin.currentSessionId || activeSessionId;
+        sessionIdTextEl.style.display = 'none';
+        renameSessionBtn.style.display = 'none';
+
+        const inputEl = sessionBadge.createEl('input', {
+            type: 'text',
+            value: currentName,
+            cls: 'session-rename-input chat-header-rename-input'
+        });
+        inputEl.focus();
+        inputEl.select();
+
+        let finished = false;
+        const finishRename = async (save: boolean) => {
+            if (finished) return;
+            finished = true;
+            const proposed = inputEl.value.trim();
+            inputEl.remove();
+            sessionIdTextEl.style.display = '';
+            renameSessionBtn.style.display = '';
+
+            if (!save || !proposed || proposed === currentName) {
+                sessionIdTextEl.setText(plugin.currentSessionId || activeSessionId);
+                return;
+            }
+
+            try {
+                const finalId = await plugin.renameSession(currentName, proposed);
+                activeSessionId = finalId;
+                sessionIdTextEl.setText(finalId);
+                new Notice(`Session renamed to "${finalId}"`);
+            } catch (err: any) {
+                sessionIdTextEl.setText(currentName);
+                new Notice(err?.message || 'Failed to rename session.');
+            }
+        };
+
+        inputEl.addEventListener('keydown', async (ke: KeyboardEvent) => {
+            if (ke.key === 'Enter') {
+                ke.preventDefault();
+                await finishRename(true);
+            } else if (ke.key === 'Escape') {
+                ke.preventDefault();
+                await finishRename(false);
+            }
+        });
+
+        inputEl.addEventListener('blur', async () => {
+            await finishRename(true);
+        });
+    };
+
+    sessionIdTextEl.addEventListener('click', startInlineRename);
+    renameSessionBtn.onClickEvent(startInlineRename);
 
     const sessionActions = sessionBar.createDiv({ cls: 'chat-session-actions' });
+
+    const openMdBtn = sessionActions.createEl('button', {
+        cls: 'clickable-icon chat-action-btn',
+        attr: { 'aria-label': 'Open session Markdown note' }
+    });
+    setIcon(openMdBtn, 'file-text');
+    openMdBtn.onClickEvent(async (e) => {
+        e.stopPropagation();
+        const curId = plugin.currentSessionId || activeSessionId;
+        await plugin.engine.ensureSession(curId);
+        await app.workspace.openLinkText(`DyResearch/Sessions/${curId}.md`, '', false);
+    });
 
     const newChatBtn = sessionActions.createEl('button', {
         cls: 'clickable-icon chat-action-btn',
@@ -377,6 +461,13 @@ export class ChatModal extends Modal {
         await renderChatInterface(this.mainBodyWrapper, this.app, this.plugin, sessionId, {
             isDocked: false
         });
+    }
+
+    public updateSessionBadge(newSessionId: string) {
+        const badgeText = this.mainBodyWrapper?.querySelector('.chat-session-id-text');
+        if (badgeText) {
+            badgeText.textContent = newSessionId;
+        }
     }
 
     onClose() {

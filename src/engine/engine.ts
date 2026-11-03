@@ -77,10 +77,11 @@ export class DyResearchEngine {
     }
 
     public async ensureSession(sessionId: string) {
+        const resolvedId = this.sessionService.resolveSessionId(sessionId);
         return await this.sessionService.getOrCreateSession({
             appName: 'dyresearch',
             userId: 'local-user',
-            sessionId: sessionId
+            sessionId: resolvedId
         });
     }
 
@@ -93,12 +94,13 @@ export class DyResearchEngine {
             throw new Error("Engine not initialized");
         }
 
-        await this.ensureSession(sessionId);
+        const resolvedId = this.sessionService.resolveSessionId(sessionId);
+        await this.ensureSession(resolvedId);
 
         const events = this.runner.runAsync({
             userId: 'local-user',
-            sessionId: sessionId,
-            newMessage: { parts: [{ text }] }
+            sessionId: resolvedId,
+            newMessage: { role: 'user', parts: [{ text }] }
         });
 
         for await (const event of events) {
@@ -110,8 +112,8 @@ export class DyResearchEngine {
         return await this.sessionService.listSessions({ appName: 'dyresearch' });
     }
 
-    public async renameSession(oldSessionId: string, newSessionId: string) {
-        await this.sessionService.renameSession(oldSessionId, newSessionId);
+    public async renameSession(oldSessionId: string, newSessionId: string): Promise<string> {
+        return await this.sessionService.renameSession(oldSessionId, newSessionId);
     }
 
     public async ingestFile(

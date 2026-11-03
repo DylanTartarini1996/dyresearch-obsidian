@@ -71,6 +71,25 @@ export default class DyResearchPlugin extends Plugin {
         }
     }
 
+    public async renameSession(oldSessionId: string, newSessionId: string): Promise<string> {
+        const finalId = await this.engine.renameSession(oldSessionId, newSessionId);
+        if (this.currentSessionId === oldSessionId) {
+            this.currentSessionId = finalId;
+        }
+        if (this.activeChatModal) {
+            this.activeChatModal.updateSessionBadge(finalId);
+        }
+        const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_HISTORY)[0];
+        if (leaf && leaf.view instanceof HistoryView) {
+            if (leaf.view.getActiveTab() === 'chats') {
+                await leaf.view.refreshView();
+            } else {
+                leaf.view.updateActiveChatBadge(finalId);
+            }
+        }
+        return finalId;
+    }
+
     // Centralized controller to enforce a single chat instance
     public async openOrCreateChat(forceMode?: 'docked' | 'floating') {
         const mode = forceMode || this.settings.chatDisplayMode || 'docked';

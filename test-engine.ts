@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { createEvent } from '@google/adk';
 import { DyResearchEngine } from './src/engine/engine';
 import {
     saveAndIndexDocument,
@@ -72,13 +73,49 @@ const mockPlugin = {
     assert.strictEqual(session.id, 'test_session_1');
     assert.ok(dirs.has('DyResearch') && dirs.has('DyResearch/Sessions'));
     assert.ok(files.has('DyResearch/Sessions/test_session_1.md'));
-    await engine.renameSession('test_session_1', 'renamed_session');
+
+    // Append user & model events to verify bot memory persists after renaming
+    await engine.sessionService.appendEvent({
+        session,
+        event: createEvent({
+            invocationId: 'inv_1',
+            author: 'user',
+            content: { role: 'user', parts: [{ text: 'Remember the secret code: 42-Alpha' }] }
+        })
+    });
+    await engine.sessionService.appendEvent({
+        session,
+        event: createEvent({
+            invocationId: 'inv_1',
+            author: 'coordinator_agent',
+            content: { role: 'model', parts: [{ text: 'I will remember 42-Alpha.' }] }
+        })
+    });
+
+    const renamedId = await engine.renameSession('test_session_1', 'renamed_session');
+    assert.strictEqual(renamedId, 'renamed_session');
     assert.ok(files.has('DyResearch/Sessions/renamed_session.md'));
     assert.ok(!files.has('DyResearch/Sessions/test_session_1.md'));
+
+    // Verify in-flight session reference and newly loaded session both retain full conversation memory
+    assert.strictEqual(session.id, 'renamed_session');
+    assert.strictEqual(session.events.length, 2);
+
+    const reloadedSession = await engine.ensureSession('renamed_session');
+    assert.strictEqual(reloadedSession.id, 'renamed_session');
+    assert.strictEqual(reloadedSession.events.length, 2);
+    assert.strictEqual((reloadedSession.events[0] as any).content.parts[0].text, 'Remember the secret code: 42-Alpha');
+
+    // Verify manual .md file rename in Obsidian's file tree also preserves session ID and memory
+    const mdContent = files.get('DyResearch/Sessions/renamed_session.md')!;
+    files.set('DyResearch/Sessions/Manually_Renamed_Chat.md', mdContent);
+    files.delete('DyResearch/Sessions/renamed_session.md');
+
     const listed = await engine.getSessions();
     assert.strictEqual(listed.sessions.length, 1);
-    assert.strictEqual(listed.sessions[0].id, 'renamed_session');
-    console.log("All session markdown checks passed.");
+    assert.strictEqual(listed.sessions[0].id, 'Manually_Renamed_Chat');
+    assert.strictEqual(listed.sessions[0].events.length, 2);
+    console.log("All session markdown and memory persistence checks passed.");
 
     // Test PDF save + parse + index
     const minPdf = Buffer.from(

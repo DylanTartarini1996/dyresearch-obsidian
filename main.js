@@ -84,12 +84,86 @@ var import_obsidian4 = require("obsidian");
 var import_obsidian2 = require("obsidian");
 async function renderChatInterface(container, app, plugin, sessionId, options = {}) {
   container.empty();
+  let activeSessionId = plugin.engine.sessionService.resolveSessionId(sessionId);
+  plugin.currentSessionId = activeSessionId;
   const sessionBar = container.createDiv({ cls: "chat-session-bar" });
   const sessionBadge = sessionBar.createDiv({ cls: "chat-session-badge" });
   const badgeIcon = sessionBadge.createSpan({ cls: "chat-session-badge-icon" });
   (0, import_obsidian2.setIcon)(badgeIcon, "message-square");
-  sessionBadge.createSpan({ text: sessionId, cls: "chat-session-id-text" });
+  const sessionIdTextEl = sessionBadge.createSpan({
+    text: activeSessionId,
+    cls: "chat-session-id-text",
+    attr: { title: "Click to rename session" }
+  });
+  const renameSessionBtn = sessionBadge.createEl("button", {
+    cls: "clickable-icon chat-rename-inline-btn",
+    attr: { "aria-label": "Rename session" }
+  });
+  (0, import_obsidian2.setIcon)(renameSessionBtn, "pencil");
+  const startInlineRename = (e) => {
+    e.stopPropagation();
+    if (sessionBadge.querySelector("input"))
+      return;
+    const currentName = plugin.currentSessionId || activeSessionId;
+    sessionIdTextEl.style.display = "none";
+    renameSessionBtn.style.display = "none";
+    const inputEl = sessionBadge.createEl("input", {
+      type: "text",
+      value: currentName,
+      cls: "session-rename-input chat-header-rename-input"
+    });
+    inputEl.focus();
+    inputEl.select();
+    let finished = false;
+    const finishRename = async (save) => {
+      if (finished)
+        return;
+      finished = true;
+      const proposed = inputEl.value.trim();
+      inputEl.remove();
+      sessionIdTextEl.style.display = "";
+      renameSessionBtn.style.display = "";
+      if (!save || !proposed || proposed === currentName) {
+        sessionIdTextEl.setText(plugin.currentSessionId || activeSessionId);
+        return;
+      }
+      try {
+        const finalId = await plugin.renameSession(currentName, proposed);
+        activeSessionId = finalId;
+        sessionIdTextEl.setText(finalId);
+        new import_obsidian2.Notice(`Session renamed to "${finalId}"`);
+      } catch (err) {
+        sessionIdTextEl.setText(currentName);
+        new import_obsidian2.Notice(err?.message || "Failed to rename session.");
+      }
+    };
+    inputEl.addEventListener("keydown", async (ke2) => {
+      if (ke2.key === "Enter") {
+        ke2.preventDefault();
+        await finishRename(true);
+      } else if (ke2.key === "Escape") {
+        ke2.preventDefault();
+        await finishRename(false);
+      }
+    });
+    inputEl.addEventListener("blur", async () => {
+      await finishRename(true);
+    });
+  };
+  sessionIdTextEl.addEventListener("click", startInlineRename);
+  renameSessionBtn.onClickEvent(startInlineRename);
   const sessionActions = sessionBar.createDiv({ cls: "chat-session-actions" });
+  const openMdBtn = sessionActions.createEl("button", {
+    cls: "clickable-icon chat-action-btn",
+    attr: { "aria-label": "Open session Markdown note" }
+  });
+  (0, import_obsidian2.setIcon)(openMdBtn, "file-text");
+  openMdBtn.onClickEvent(async (e) => {
+    e.stopPropagation();
+    const curId = plugin.currentSessionId || activeSessionId;
+    await plugin.engine.ensureSession(curId);
+    await app.workspace.openLinkText(`DyResearch/Sessions/${curId}.md`, "", false);
+  });
   const newChatBtn = sessionActions.createEl("button", {
     cls: "clickable-icon chat-action-btn",
     attr: { "aria-label": "New chat session" }
@@ -402,6 +476,12 @@ var ChatModal = class extends import_obsidian2.Modal {
     await renderChatInterface(this.mainBodyWrapper, this.app, this.plugin, sessionId, {
       isDocked: false
     });
+  }
+  updateSessionBadge(newSessionId) {
+    const badgeText = this.mainBodyWrapper?.querySelector(".chat-session-id-text");
+    if (badgeText) {
+      badgeText.textContent = newSessionId;
+    }
   }
   onClose() {
     this.plugin.activeChatModal = null;
@@ -1025,6 +1105,12 @@ var HistoryView = class extends import_obsidian4.ItemView {
     this.activeTab = tab;
     this.refreshView();
   }
+  updateActiveChatBadge(newSessionId) {
+    const badgeText = this.containerEl.querySelector(".chat-session-id-text");
+    if (badgeText) {
+      badgeText.textContent = newSessionId;
+    }
+  }
   async onOpen() {
     if (this.plugin.activeChatModal) {
       this.activeTab = "chats";
@@ -1091,124 +1177,159 @@ var HistoryView = class extends import_obsidian4.ItemView {
     const searchContainer = container.createDiv({ cls: "history-search-container" });
     const searchInput = searchContainer.createEl("input", {
       type: "text",
-      placeholder: "Search sessions...",
+      placeholder: "\u{1F50D} Search sessions by name or message...",
       value: this.searchQuery,
       cls: "history-search-input"
     });
-    searchInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        this.searchQuery = searchInput.value.trim();
-        list.empty();
-        loadChats();
-      }
-    });
-    searchInput.addEventListener("input", () => {
-      if (searchInput.value.trim() === "" && this.searchQuery !== "") {
-        this.searchQuery = "";
-        list.empty();
-        loadChats();
-      }
-    });
     const list = container.createDiv({ cls: "history-list" });
+    let allSessions = [];
+    const renderFilteredSessions = () => {
+      list.empty();
+      const query = this.searchQuery.trim().toLowerCase();
+      const sessions = query ? allSessions.filter((s) => {
+        if (s.sessionId.toLowerCase().includes(query))
+          return true;
+        const eventText = (s.events || []).map((e) => {
+          const parts = e.content?.parts || e.newMessage?.parts || e.modelResponse?.parts || [];
+          return parts.map((p) => p.text || "").join(" ");
+        }).join(" ").toLowerCase();
+        return eventText.includes(query);
+      }) : allSessions;
+      if (sessions.length === 0) {
+        list.createEl("p", { text: "No sessions found.", cls: "dy-empty-list-text" });
+        return;
+      }
+      sessions.forEach((item) => {
+        const sessionEl = list.createDiv({ cls: "history-item" });
+        if (item.sessionId === this.plugin.currentSessionId)
+          sessionEl.addClass("is-active");
+        const titleContainer = sessionEl.createDiv({ cls: "session-title-container" });
+        const nameEl = titleContainer.createEl("div", {
+          text: item.sessionId,
+          cls: "session-name",
+          attr: { title: "Click to open chat \u2022 Double-click or click \u270F\uFE0F to rename" }
+        });
+        const actionsGroup = titleContainer.createDiv({ cls: "session-item-actions" });
+        const openMdBtn = actionsGroup.createEl("button", {
+          cls: "dy-edit-btn",
+          attr: { "aria-label": "Open session Markdown note" }
+        });
+        (0, import_obsidian4.setIcon)(openMdBtn, "file-text");
+        const editBtn = actionsGroup.createEl("button", {
+          cls: "dy-edit-btn",
+          attr: { "aria-label": "Rename session" }
+        });
+        (0, import_obsidian4.setIcon)(editBtn, "pencil");
+        const deleteBtn = actionsGroup.createEl("button", {
+          cls: "dy-delete-btn",
+          attr: { "aria-label": "Delete session" }
+        });
+        (0, import_obsidian4.setIcon)(deleteBtn, "trash");
+        const msgCount = (item.events || []).filter((e) => {
+          const parts = e.content?.parts || e.newMessage?.parts || e.modelResponse?.parts || [];
+          return parts.some((p) => p?.text && !p?.thought);
+        }).length;
+        const date = new Date(item.updatedAt).toLocaleDateString();
+        sessionEl.createEl("small", {
+          text: `Last activity: ${date} \u2022 \u{1F4AC} ${msgCount} msg${msgCount === 1 ? "" : "s"}`,
+          cls: "session-date"
+        });
+        sessionEl.onClickEvent(async (e) => {
+          if (e.target.tagName === "INPUT")
+            return;
+          this.plugin.currentSessionId = item.sessionId;
+          if (this.plugin.activeChatModal) {
+            await this.plugin.activeChatModal.switchSession(item.sessionId);
+            await this.refreshView();
+          } else {
+            this.activeTab = "chat";
+            await this.refreshView();
+          }
+        });
+        openMdBtn.onClickEvent(async (e) => {
+          e.stopPropagation();
+          await this.app.workspace.openLinkText(`DyResearch/Sessions/${item.sessionId}.md`, "", false);
+        });
+        const beginSessionRename = (e) => {
+          e.stopPropagation();
+          if (nameEl.querySelector("input"))
+            return;
+          nameEl.empty();
+          const inputField = nameEl.createEl("input", {
+            type: "text",
+            value: item.sessionId,
+            cls: "session-rename-input"
+          });
+          editBtn.style.display = "none";
+          inputField.focus();
+          inputField.select();
+          let committed = false;
+          const commitRename = async (save) => {
+            if (committed)
+              return;
+            committed = true;
+            const newId = inputField.value.trim();
+            if (!save || !newId || newId === item.sessionId) {
+              nameEl.setText(item.sessionId);
+              editBtn.style.display = "flex";
+              return;
+            }
+            inputField.disabled = true;
+            try {
+              const finalId = await this.plugin.renameSession(item.sessionId, newId);
+              new import_obsidian4.Notice(`Session renamed to "${finalId}".`);
+            } catch (err) {
+              nameEl.setText(item.sessionId);
+              editBtn.style.display = "flex";
+              new import_obsidian4.Notice(err?.message || "Failed to rename session.");
+            }
+          };
+          inputField.addEventListener("keydown", async (keyEvent) => {
+            if (keyEvent.key === "Enter") {
+              keyEvent.preventDefault();
+              await commitRename(true);
+            } else if (keyEvent.key === "Escape") {
+              keyEvent.preventDefault();
+              await commitRename(false);
+            }
+          });
+          inputField.addEventListener("blur", async () => {
+            await commitRename(true);
+          });
+        };
+        editBtn.onClickEvent(beginSessionRename);
+        nameEl.addEventListener("dblclick", beginSessionRename);
+        deleteBtn.onClickEvent(async (e) => {
+          e.stopPropagation();
+          if (!confirm(`Are you sure you want to delete session "${item.sessionId}"?`))
+            return;
+          try {
+            await this.plugin.engine.sessionService.deleteSession({
+              appName: "dyresearch",
+              sessionId: item.sessionId
+            });
+            if (this.plugin.currentSessionId === item.sessionId) {
+              this.plugin.currentSessionId = `obsidian_${Date.now()}`;
+            }
+            this.refreshView();
+            new import_obsidian4.Notice("Session deleted.");
+          } catch (err) {
+            new import_obsidian4.Notice("Failed to delete session.");
+          }
+        });
+      });
+    };
+    searchInput.addEventListener("input", () => {
+      this.searchQuery = searchInput.value;
+      renderFilteredSessions();
+    });
     const loadChats = async () => {
       const loadingText = list.createEl("p", { text: "Loading sessions...", cls: "loading-text" });
       try {
         const response = await this.plugin.engine.getSessions();
         loadingText.remove();
-        let sessions = response.sessions;
-        if (this.searchQuery) {
-          sessions = sessions.filter((s) => s.sessionId.toLowerCase().includes(this.searchQuery.toLowerCase()));
-        }
-        if (sessions.length === 0) {
-          list.createEl("p", { text: "No sessions found.", cls: "dy-empty-list-text" });
-          return;
-        }
-        sessions.forEach((item) => {
-          const sessionEl = list.createDiv({ cls: "history-item" });
-          if (item.sessionId === this.plugin.currentSessionId)
-            sessionEl.addClass("is-active");
-          const titleContainer = sessionEl.createDiv({ cls: "session-title-container" });
-          const nameEl = titleContainer.createEl("div", { text: item.sessionId, cls: "session-name" });
-          const actionsGroup = titleContainer.createDiv({ cls: "session-item-actions" });
-          const editBtn = actionsGroup.createEl("button", {
-            cls: "dy-edit-btn",
-            attr: { "aria-label": "Rename session" }
-          });
-          (0, import_obsidian4.setIcon)(editBtn, "pencil");
-          const deleteBtn = actionsGroup.createEl("button", {
-            cls: "dy-delete-btn",
-            attr: { "aria-label": "Delete session" }
-          });
-          (0, import_obsidian4.setIcon)(deleteBtn, "trash");
-          const date = new Date(item.updatedAt).toLocaleDateString();
-          sessionEl.createEl("small", { text: `Last activity: ${date}`, cls: "session-date" });
-          sessionEl.onClickEvent(async (e) => {
-            if (e.target.tagName === "INPUT")
-              return;
-            this.plugin.currentSessionId = item.sessionId;
-            if (this.plugin.activeChatModal) {
-              await this.plugin.activeChatModal.switchSession(item.sessionId);
-              await this.refreshView();
-            } else {
-              this.activeTab = "chat";
-              await this.refreshView();
-            }
-          });
-          editBtn.onClickEvent((e) => {
-            e.stopPropagation();
-            nameEl.empty();
-            const inputField = nameEl.createEl("input", {
-              type: "text",
-              value: item.sessionId,
-              cls: "session-rename-input"
-            });
-            editBtn.style.display = "none";
-            inputField.focus();
-            inputField.addEventListener("keydown", async (keyEvent) => {
-              if (keyEvent.key === "Enter") {
-                const newId = inputField.value.trim();
-                if (!newId || newId === item.sessionId) {
-                  nameEl.setText(item.sessionId);
-                  editBtn.style.display = "flex";
-                  return;
-                }
-                inputField.disabled = true;
-                try {
-                  await this.plugin.engine.renameSession(item.sessionId, newId);
-                  if (this.plugin.currentSessionId === item.sessionId) {
-                    this.plugin.currentSessionId = newId;
-                  }
-                  this.refreshView();
-                  new import_obsidian4.Notice("Session renamed successfully.");
-                } catch (err) {
-                  nameEl.setText(item.sessionId);
-                  editBtn.style.display = "flex";
-                }
-              } else if (keyEvent.key === "Escape") {
-                nameEl.setText(item.sessionId);
-                editBtn.style.display = "flex";
-              }
-            });
-          });
-          deleteBtn.onClickEvent(async (e) => {
-            e.stopPropagation();
-            if (!confirm(`Are you sure you want to delete session "${item.sessionId}"?`))
-              return;
-            try {
-              await this.plugin.engine.sessionService.deleteSession({
-                appName: "dyresearch",
-                sessionId: item.sessionId
-              });
-              if (this.plugin.currentSessionId === item.sessionId) {
-                this.plugin.currentSessionId = `obsidian_${Date.now()}`;
-              }
-              this.refreshView();
-              new import_obsidian4.Notice("Session deleted.");
-            } catch (err) {
-              new import_obsidian4.Notice("Failed to delete session.");
-            }
-          });
-        });
+        allSessions = response.sessions;
+        renderFilteredSessions();
       } catch (err) {
         loadingText.setText("Failed to load history.");
       }
@@ -32375,14 +32496,28 @@ Gb();
 
 // src/engine/session-service.ts
 var STATE_BLOCK_REGEX = /<!--\s*dyresearch-session-state\r?\n([\s\S]*?)\r?\n-->/;
+function sanitizeSessionId(rawId) {
+  return rawId.trim().replace(/\.md$/i, "").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim();
+}
 var ObsidianSessionService = class extends Du {
   app;
   basePath = "DyResearch/Sessions";
+  activeSessions = /* @__PURE__ */ new Map();
+  renamedAliases = /* @__PURE__ */ new Map();
   constructor(app) {
     super();
     this.app = app;
     this.ensureBaseDirectory().catch(() => {
     });
+  }
+  resolveSessionId(sessionId) {
+    let current = sanitizeSessionId(sessionId) || sessionId;
+    const visited = /* @__PURE__ */ new Set();
+    while (this.renamedAliases.has(current) && !visited.has(current)) {
+      visited.add(current);
+      current = this.renamedAliases.get(current);
+    }
+    return current;
   }
   async ensureBaseDirectory() {
     const parts = this.basePath.split("/");
@@ -32446,14 +32581,53 @@ var ObsidianSessionService = class extends Du {
     lines.push("<!-- dyresearch-session-state", payload, "-->", "");
     return lines.join("\n");
   }
+  parseMarkdownFallbackEvents(content) {
+    const events = [];
+    const bodyWithoutState = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").replace(STATE_BLOCK_REGEX, "");
+    const blockRegex = /^###\s+(.+)\r?\n([\s\S]*?)(?=^###\s+|$)/gm;
+    let m7;
+    let idx = 0;
+    while ((m7 = blockRegex.exec(bodyWithoutState)) !== null) {
+      const header = m7[1].trim();
+      const text = m7[2].trim();
+      if (!text || header.includes("Error"))
+        continue;
+      const isUser = header.includes("You") || header.toLowerCase().includes("user");
+      const author = isUser ? "user" : header.replace(/^🤖\s*/, "").trim() || "coordinator_agent";
+      events.push({
+        id: `md_evt_${idx++}`,
+        invocationId: `md_inv_${idx}`,
+        author,
+        content: {
+          role: isUser ? "user" : "model",
+          parts: [{ text }]
+        },
+        timestamp: Date.now()
+      });
+    }
+    return events;
+  }
   parseSessionFromMarkdown(content, fallbackId) {
     const match = content.match(STATE_BLOCK_REGEX);
-    const raw = match ? JSON.parse(match[1]) : JSON.parse(content);
-    const id2 = raw.id || raw.sessionId || fallbackId || `session_${Date.now()}`;
+    let raw = {};
+    if (match) {
+      try {
+        raw = JSON.parse(match[1]);
+      } catch {
+        raw = {};
+      }
+    } else {
+      try {
+        raw = JSON.parse(content);
+      } catch {
+        raw = { events: this.parseMarkdownFallbackEvents(content) };
+      }
+    }
+    const id2 = fallbackId || raw.id || raw.sessionId || `session_${Date.now()}`;
     const updatedIso = raw.updatedAt || new Date(raw.lastUpdateTime || Date.now()).toISOString();
     const createdIso = raw.createdAt || updatedIso;
     const lastUpdateTime = typeof raw.lastUpdateTime === "number" ? raw.lastUpdateTime : new Date(updatedIso).getTime();
-    const rawEvents = Array.isArray(raw.events) ? raw.events : [];
+    const rawEvents = Array.isArray(raw.events) && raw.events.length > 0 ? raw.events : this.parseMarkdownFallbackEvents(content);
     const cleanedEvents = rawEvents.filter((e) => !(Array.isArray(e.longRunningToolIds) && e.longRunningToolIds.length > 0));
     return {
       id: id2,
@@ -32469,7 +32643,10 @@ var ObsidianSessionService = class extends Du {
   }
   async writeSessionFile(session) {
     await this.ensureBaseDirectory();
-    const filePath = this.getFilePath(session.id || session.sessionId);
+    const resolvedId = this.resolveSessionId(session.id || session.sessionId);
+    session.id = resolvedId;
+    session.sessionId = resolvedId;
+    const filePath = this.getFilePath(resolvedId);
     const content = this.serializeSessionToMarkdown(session);
     const existingFile = this.app.vault.getAbstractFileByPath?.(filePath);
     if (existingFile && this.app.vault.modify) {
@@ -32481,7 +32658,8 @@ var ObsidianSessionService = class extends Du {
     }
   }
   async createSession(request) {
-    const sessionId = request.sessionId || `obsidian_${Date.now()}`;
+    const rawId = request.sessionId || `obsidian_${Date.now()}`;
+    const sessionId = this.resolveSessionId(rawId);
     const now = /* @__PURE__ */ new Date();
     const session = {
       id: sessionId,
@@ -32494,16 +32672,31 @@ var ObsidianSessionService = class extends Du {
       updatedAt: now.toISOString(),
       lastUpdateTime: now.getTime()
     };
+    this.activeSessions.set(sessionId, session);
     await this.writeSessionFile(session);
     return session;
   }
   async getSession(request) {
-    const filePath = this.getFilePath(request.sessionId);
+    const resolvedId = this.resolveSessionId(request.sessionId);
+    const filePath = this.getFilePath(resolvedId);
     const exists = await this.app.vault.adapter.exists(filePath);
-    if (!exists)
-      return void 0;
+    if (!exists) {
+      return this.activeSessions.get(resolvedId);
+    }
     const content = await this.app.vault.adapter.read(filePath);
-    return this.parseSessionFromMarkdown(content, request.sessionId);
+    const parsed = this.parseSessionFromMarkdown(content, resolvedId);
+    const existingInMemory = this.activeSessions.get(resolvedId);
+    if (existingInMemory) {
+      existingInMemory.id = resolvedId;
+      existingInMemory.sessionId = resolvedId;
+      existingInMemory.state = parsed.state;
+      existingInMemory.events = parsed.events;
+      existingInMemory.updatedAt = parsed.updatedAt;
+      existingInMemory.lastUpdateTime = parsed.lastUpdateTime;
+      return existingInMemory;
+    }
+    this.activeSessions.set(resolvedId, parsed);
+    return parsed;
   }
   async listSessions(request) {
     await this.ensureBaseDirectory();
@@ -32515,9 +32708,11 @@ var ObsidianSessionService = class extends Du {
     const sessions = [];
     for (const file of files.files) {
       if (file.endsWith(".md") || file.endsWith(".json")) {
+        const fallbackId = file.split("/").pop()?.replace(/\.(md|json)$/, "");
+        if (fallbackId && fallbackId.startsWith("auto_index_"))
+          continue;
         const content = await this.app.vault.adapter.read(file);
         try {
-          const fallbackId = file.split("/").pop()?.replace(/\.(md|json)$/, "");
           const session = this.parseSessionFromMarkdown(content, fallbackId);
           if (session.appName === request.appName && (!request.userId || session.userId === request.userId)) {
             sessions.push(session);
@@ -32540,18 +32735,50 @@ var ObsidianSessionService = class extends Du {
     };
   }
   async renameSession(oldSessionId, newSessionId) {
-    const session = await this.getSession({ appName: "dyresearch", userId: "local-user", sessionId: oldSessionId });
-    if (!session)
-      return;
-    session.id = newSessionId;
-    session.sessionId = newSessionId;
+    const cleanOldId = this.resolveSessionId(oldSessionId);
+    const cleanNewId = sanitizeSessionId(newSessionId);
+    if (!cleanNewId) {
+      throw new Error("Session name cannot be empty.");
+    }
+    if (cleanOldId === cleanNewId) {
+      return cleanNewId;
+    }
+    const newFilePath = this.getFilePath(cleanNewId);
+    const oldFilePath = this.getFilePath(cleanOldId);
+    const isCaseOnlyRename = oldFilePath.toLowerCase() === newFilePath.toLowerCase();
+    if (!isCaseOnlyRename && await this.app.vault.adapter.exists(newFilePath)) {
+      throw new Error(`A session named "${cleanNewId}" already exists.`);
+    }
+    let session = await this.getSession({ appName: "dyresearch", userId: "local-user", sessionId: cleanOldId });
+    if (!session) {
+      session = await this.createSession({ appName: "dyresearch", userId: "local-user", sessionId: cleanOldId });
+    }
+    this.renamedAliases.set(oldSessionId, cleanNewId);
+    this.renamedAliases.set(cleanOldId, cleanNewId);
+    this.renamedAliases.delete(cleanNewId);
+    session.id = cleanNewId;
+    session.sessionId = cleanNewId;
     session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
     session.lastUpdateTime = Date.now();
+    this.activeSessions.delete(cleanOldId);
+    this.activeSessions.set(cleanNewId, session);
+    const existingAbstract = this.app.vault.getAbstractFileByPath?.(oldFilePath);
+    if (existingAbstract && typeof this.app.vault.rename === "function") {
+      try {
+        await this.app.vault.rename(existingAbstract, newFilePath);
+      } catch {
+      }
+    }
     await this.writeSessionFile(session);
-    await this.deleteSession({ appName: session.appName, userId: session.userId, sessionId: oldSessionId });
+    if (!isCaseOnlyRename && await this.app.vault.adapter.exists(oldFilePath)) {
+      await this.deleteSession({ appName: session.appName, userId: session.userId, sessionId: cleanOldId });
+    }
+    return cleanNewId;
   }
   async deleteSession(request) {
-    const filePath = this.getFilePath(request.sessionId);
+    const cleanId = sanitizeSessionId(request.sessionId) || request.sessionId;
+    this.activeSessions.delete(cleanId);
+    const filePath = this.getFilePath(cleanId);
     const existingFile = this.app.vault.getAbstractFileByPath?.(filePath);
     if (existingFile && this.app.vault.delete) {
       await this.app.vault.delete(existingFile);
@@ -32565,11 +32792,12 @@ var ObsidianSessionService = class extends Du {
   async appendEvent(request) {
     const event = await super.appendEvent(request);
     const session = request.session;
-    const sessionId = session.id || session.sessionId;
-    session.id = sessionId;
-    session.sessionId = sessionId;
+    const resolvedId = this.resolveSessionId(session.id || session.sessionId);
+    session.id = resolvedId;
+    session.sessionId = resolvedId;
     session.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
     session.lastUpdateTime = event.timestamp || Date.now();
+    this.activeSessions.set(resolvedId, session);
     await this.writeSessionFile(session);
     return event;
   }
@@ -33666,10 +33894,11 @@ var DyResearchEngine = class {
     });
   }
   async ensureSession(sessionId) {
+    const resolvedId = this.sessionService.resolveSessionId(sessionId);
     return await this.sessionService.getOrCreateSession({
       appName: "dyresearch",
       userId: "local-user",
-      sessionId
+      sessionId: resolvedId
     });
   }
   async *sendMessage(sessionId, text) {
@@ -33679,11 +33908,12 @@ var DyResearchEngine = class {
     if (!this.runner) {
       throw new Error("Engine not initialized");
     }
-    await this.ensureSession(sessionId);
+    const resolvedId = this.sessionService.resolveSessionId(sessionId);
+    await this.ensureSession(resolvedId);
     const events = this.runner.runAsync({
       userId: "local-user",
-      sessionId,
-      newMessage: { parts: [{ text }] }
+      sessionId: resolvedId,
+      newMessage: { role: "user", parts: [{ text }] }
     });
     for await (const event of events) {
       yield event;
@@ -33693,7 +33923,7 @@ var DyResearchEngine = class {
     return await this.sessionService.listSessions({ appName: "dyresearch" });
   }
   async renameSession(oldSessionId, newSessionId) {
-    await this.sessionService.renameSession(oldSessionId, newSessionId);
+    return await this.sessionService.renameSession(oldSessionId, newSessionId);
   }
   async ingestFile(file, metadata, onProgress) {
     const MAX_SIZE = 25 * 1024 * 1024;
@@ -33844,6 +34074,24 @@ var DyResearchPlugin = class extends import_obsidian7.Plugin {
     } else {
       await this.activateView("chat");
     }
+  }
+  async renameSession(oldSessionId, newSessionId) {
+    const finalId = await this.engine.renameSession(oldSessionId, newSessionId);
+    if (this.currentSessionId === oldSessionId) {
+      this.currentSessionId = finalId;
+    }
+    if (this.activeChatModal) {
+      this.activeChatModal.updateSessionBadge(finalId);
+    }
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_HISTORY)[0];
+    if (leaf && leaf.view instanceof HistoryView) {
+      if (leaf.view.getActiveTab() === "chats") {
+        await leaf.view.refreshView();
+      } else {
+        leaf.view.updateActiveChatBadge(finalId);
+      }
+    }
+    return finalId;
   }
   // Centralized controller to enforce a single chat instance
   async openOrCreateChat(forceMode) {
