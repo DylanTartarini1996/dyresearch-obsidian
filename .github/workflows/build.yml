@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-and-release:
@@ -37,6 +39,14 @@ jobs:
         with:
           name: dyresearch
           path: |
+            main.js
+            manifest.json
+            styles.css
+
+      - name: Generate Artifact Attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
             main.js
             manifest.json
             styles.css
