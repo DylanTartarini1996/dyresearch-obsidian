@@ -1,6 +1,6 @@
 {
   "name": "dyresearch-sidecar",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "DyResearch Agent system built with Google ADK.",
   "main": "main.js",
   "scripts": {
