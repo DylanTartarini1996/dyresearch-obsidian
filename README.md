@@ -85,7 +85,7 @@ DyResearch is built entirely using Obsidian's public `app.vault`, `app.vault.ada
 ## ⚙️ Installation & Setup
 
 ### Manual Installation
-1. Download the latest release (`main.js`, `manifest.json`, `styles.css`) from the [Releases](https://github.com/dylantartarini/dyresearch-obsidian/releases) page.
+1. Download the latest release (`main.js`, `manifest.json`, `styles.css`) from the [Releases](https://github.com/DylanTartarini1996/dyresearch-obsidian/releases) page.
 2. In your Obsidian vault, navigate to `.obsidian/plugins/` and create a folder named `dyresearch-sidecar`.
 3. Copy `main.js`, `manifest.json`, and `styles.css` into that folder.
 4. Reload Obsidian, go to **Settings → Community Plugins**, and enable **DyResearch AI Sidecar**.
