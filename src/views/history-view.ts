@@ -311,14 +311,14 @@ export class HistoryView extends ItemView {
         });
         uploadBtn.onClickEvent(() => fileInput.click());
 
-        fileInput.addEventListener("change", async () => {
-            if (!fileInput.files || fileInput.files.length === 0) return;
+        const handleFiles = async (files: FileList | File[]) => {
+            if (!files || files.length === 0 || uploadBtn.disabled) return;
 
             uploadBtn.setText("⏳ Processing...");
             uploadBtn.disabled = true;
 
             try {
-                for (const file of Array.from(fileInput.files)) {
+                for (const file of Array.from(files)) {
                     await this.plugin.engine.ingestFile(
                         file,
                         {
@@ -339,6 +339,19 @@ export class HistoryView extends ItemView {
                 uploadBtn.disabled = false;
                 fileInput.value = "";
             }
+        };
+
+        fileInput.addEventListener("change", () => handleFiles(fileInput.files!));
+
+        uploadBtn.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            uploadBtn.addClass("is-dragover");
+        });
+        uploadBtn.addEventListener("dragleave", () => uploadBtn.removeClass("is-dragover"));
+        uploadBtn.addEventListener("drop", (e) => {
+            e.preventDefault();
+            uploadBtn.removeClass("is-dragover");
+            if (e.dataTransfer?.files) handleFiles(e.dataTransfer.files);
         });
     }
 

@@ -700,6 +700,12 @@ input[type="file"].hidden-file-input {
     background-color: var(--interactive-accent-hover);
 }
 
+.upload-section .dy-upload-btn.is-dragover:not(:disabled) {
+    background-color: var(--interactive-accent-hover);
+    outline: 2px dashed var(--text-on-accent);
+    outline-offset: -3px;
+}
+
 .library-container {
     display: flex;
     flex-direction: column;

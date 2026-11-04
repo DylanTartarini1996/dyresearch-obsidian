@@ -978,9 +978,43 @@ export async function listLibraryCatalog(app: App): Promise<LibraryDocumentEntry
         const topicFolder = relParts.length > 1 ? relParts.slice(0, -1).join('/') : 'Uncategorized';
         const ext = fileName.split('.').pop()?.toUpperCase() || 'FILE';
 
-        const existing = entriesMap.get(key);
+        const existing = entriesMap.get(key) ||
+            Array.from(entriesMap.values()).find(e =>
+                e.filePath === rawPath ||
+                (e.filePath && e.filePath.split('/').pop()?.toLowerCase() === fileName.toLowerCase())
+            );
         if (existing) {
-            existing.filePath = rawPath;
+            let resolvedRawPath = rawPath;
+            const idxBase = existing.indexPath
+                ? existing.indexPath.split('/').pop()!.replace(/\.md$/i, '')
+                : sanitizeFileName(existing.title);
+            const rawExtMatch = fileName.match(/\.([^.]+)$/);
+            const rawExt = rawExtMatch ? `.${rawExtMatch[1]}` : '';
+            const desiredFileName = `${idxBase}${rawExt}`;
+            const parentDir = rawPath.split('/').slice(0, -1).join('/');
+            const desiredRawPath = `${parentDir}/${desiredFileName}`;
+
+            if (idxBase && desiredRawPath !== rawPath && !(await app.vault.adapter.exists(desiredRawPath))) {
+                try {
+                    await moveVaultFile(app, rawPath, desiredRawPath);
+                    resolvedRawPath = desiredRawPath;
+                    if (existing.indexPath && await app.vault.adapter.exists(existing.indexPath)) {
+                        const md = await app.vault.adapter.read(existing.indexPath);
+                        const updatedMd = md
+                            .replace(`file_path: "${existing.filePath}"`, `file_path: "${desiredRawPath}"`)
+                            .replace(`file_path: "${rawPath}"`, `file_path: "${desiredRawPath}"`)
+                            .replace(`[[${existing.filePath}|${fileName}]]`, `[[${desiredRawPath}|${desiredFileName}]]`)
+                            .replace(`[[${rawPath}|${fileName}]]`, `[[${desiredRawPath}|${desiredFileName}]]`);
+                        if (updatedMd !== md) {
+                            await app.vault.adapter.write(existing.indexPath, updatedMd);
+                        }
+                    }
+                } catch {
+                    // Keep original path if rename fails
+                }
+            }
+
+            existing.filePath = resolvedRawPath;
             if (topicFolder !== 'Uncategorized') {
                 existing.topicFolder = topicFolder;
             }

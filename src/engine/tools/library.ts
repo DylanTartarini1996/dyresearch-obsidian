@@ -95,11 +95,16 @@ async function upsertIndexNote(
         if (match) currentFilePath = match;
     }
 
-    if (currentFilePath && await app.vault.adapter.exists(currentFilePath) && topicFolder && topicFolder !== 'Uncategorized') {
-        const fileName = currentFilePath.split('/').pop()!;
-        const targetFolder = `${LIBRARY_DIR}/${topicFolder}`;
+    if (currentFilePath && await app.vault.adapter.exists(currentFilePath)) {
+        const oldName = currentFilePath.split('/').pop()!;
+        const extMatch = oldName.match(/\.([^.]+)$/);
+        const ext = extMatch ? `.${extMatch[1]}` : '';
+        const newFileName = safeBase ? `${safeBase}${ext}` : oldName;
+        const targetFolder = (topicFolder && topicFolder !== 'Uncategorized')
+            ? `${LIBRARY_DIR}/${topicFolder}`
+            : currentFilePath.split('/').slice(0, -1).join('/');
         await ensureVaultFolder(app, targetFolder);
-        const newFilePath = `${targetFolder}/${fileName}`;
+        const newFilePath = `${targetFolder}/${newFileName}`;
         if (newFilePath !== currentFilePath) {
             await moveVaultFile(app, currentFilePath, newFilePath);
             currentFilePath = newFilePath;
