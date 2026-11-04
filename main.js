@@ -1489,13 +1489,13 @@ var HistoryView = class extends import_obsidian4.ItemView {
       cls: "dy-upload-btn"
     });
     uploadBtn.onClickEvent(() => fileInput.click());
-    fileInput.addEventListener("change", async () => {
-      if (!fileInput.files || fileInput.files.length === 0)
+    const handleFiles = async (files) => {
+      if (!files || files.length === 0 || uploadBtn.disabled)
         return;
       uploadBtn.setText("\u23F3 Processing...");
       uploadBtn.disabled = true;
       try {
-        for (const file of Array.from(fileInput.files)) {
+        for (const file of Array.from(files)) {
           await this.plugin.engine.ingestFile(
             file,
             {
@@ -1516,6 +1516,18 @@ var HistoryView = class extends import_obsidian4.ItemView {
         uploadBtn.disabled = false;
         fileInput.value = "";
       }
+    };
+    fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+    uploadBtn.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      uploadBtn.addClass("is-dragover");
+    });
+    uploadBtn.addEventListener("dragleave", () => uploadBtn.removeClass("is-dragover"));
+    uploadBtn.addEventListener("drop", (e) => {
+      e.preventDefault();
+      uploadBtn.removeClass("is-dragover");
+      if (e.dataTransfer?.files)
+        handleFiles(e.dataTransfer.files);
     });
   }
   async renderLibraryTab(container) {
